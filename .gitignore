@@ -1,0 +1,15 @@
+# binaries
+/bin/
+
+# scratch
+/tmp/
+
+# coverage / test artifacts
+*.out
+coverage.html
+
+# fuzz corpus: crashers stay tracked, only pending entries are ignored
+testdata/fuzz/**/pending
+
+# agent tooling state, not part of the repo
+.superpowers/
