@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
-	"github.com/littlebugger/bifrost/internal/config"
-	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/revolee/bifrost/internal/config"
+	"github.com/revolee/bifrost/internal/fakesmtp"
 )
 
 // testServer builds the minimal *config.Server Dial needs: a dial
@@ -139,25 +140,40 @@ func TestEhloRejected(t *testing.T) {
 	}
 }
 
-// TestDialRSTMidHandshake: the TCP connect itself succeeds (the fake
-// accepts), so an RST that arrives instead of a banner must surface as
-// a *HandshakeError (the greeting stage), never a *DialError — the same
-// distinction TestDialGreetingTimeout draws for a hang instead of a
-// reset.
+// TestDialRSTMidHandshake: an RST fired immediately after accept RACES the
+// client's connect completion. A connect that wins the race sees the reset
+// on the greeting read (*HandshakeError{greeting}); on Linux the kernel may
+// instead deliver the pending ECONNRESET at the dial itself (*DialError) —
+// the accept queue completes the TCP handshake before userspace accept(),
+// so the RST can beat Go's connect-completion processing. Both are
+// legitimate observations of the same event and route identically through
+// relay failover and passive health, so this test asserts the taxonomy
+// (reset, never Incompatible; greeting stage when handshake-classified),
+// not the race winner.
 func TestDialRSTMidHandshake(t *testing.T) {
 	srv := fakesmtp.Start(t, fakesmtp.Script{})
 	srv.SetDown(fakesmtp.DownAcceptThenRST)
 
 	_, err := dialTest(t, srv.Addr(), Opts{EhloName: "client.example", TLSMode: "none", Timeouts: testTimeouts()})
+	if err == nil {
+		t.Fatal("Dial succeeded, want an error")
+	}
 	var herr *HandshakeError
-	if !errors.As(err, &herr) {
-		t.Fatalf("Dial err = %v (%T), want *HandshakeError", err, err)
-	}
-	if herr.Stage != "greeting" {
-		t.Errorf("HandshakeError.Stage = %q, want %q", herr.Stage, "greeting")
-	}
 	var derr *DialError
-	if errors.As(err, &derr) {
-		t.Fatalf("Dial err = %v, want NOT *DialError (TCP was accepted; the RST happened post-accept)", err)
+	switch {
+	case errors.As(err, &herr):
+		if herr.Stage != "greeting" {
+			t.Errorf("HandshakeError.Stage = %q, want %q", herr.Stage, "greeting")
+		}
+	case errors.As(err, &derr):
+		if !errors.Is(err, syscall.ECONNRESET) {
+			t.Fatalf("DialError is not a connection reset: %v", err)
+		}
+	default:
+		t.Fatalf("Dial err = %v (%T), want *HandshakeError{greeting} or reset-carrying *DialError", err, err)
+	}
+	var ierr *IncompatibleError
+	if errors.As(err, &ierr) {
+		t.Fatalf("Dial err = %v, must never classify as *IncompatibleError", err)
 	}
 }

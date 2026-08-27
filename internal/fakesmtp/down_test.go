@@ -1,10 +1,13 @@
 package fakesmtp
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -23,9 +26,18 @@ func TestDownAcceptThenRST(t *testing.T) {
 	srv := Start(t, Script{})
 	srv.SetDown(DownAcceptThenRST)
 
-	conn, r := dialRaw(t, srv.Addr())
-	_ = conn
-	_, err := r.ReadByte()
+	// The RST races the client's connect completion: Linux may surface the
+	// pending ECONNRESET at dial time, other platforms on the first read.
+	// Either observation proves the reset; only a refused/clean path fails.
+	conn, err := net.Dial("tcp", srv.Addr())
+	if err != nil {
+		if !errors.Is(err, syscall.ECONNRESET) {
+			t.Fatalf("dial failed with non-reset error: %v", err)
+		}
+		return // reset observed at connect time
+	}
+	defer func() { _ = conn.Close() }()
+	_, err = bufio.NewReader(conn).ReadByte()
 	if err == nil {
 		t.Fatalf("expected a reset, got no error")
 	}
