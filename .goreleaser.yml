@@ -1,0 +1,47 @@
+version: 2
+
+project_name: bifrost
+
+release:
+  github:
+    owner: revolee
+    name: bifrost
+
+builds:
+  - id: bifrost
+    main: ./cmd/bifrost
+    binary: bifrost
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+      - docs/operations.md
+      - examples/bifrost.hcl
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+snapshot:
+  version_template: "{{ .Version }}-snapshot"

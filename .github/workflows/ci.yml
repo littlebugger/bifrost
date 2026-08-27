@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  gate:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@v0.11.0
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
+      - name: lint + test-race + integration
+        run: make lint test-race integration
+
+  # load-smoke-pr is epic-11's PR-label-gated run: opt-in (add the
+  # "load-test" label to a PR) rather than on every push, since it
+  # launches four real processes and costs real wall-clock time on top
+  # of the gate job above. The nightly job below is what actually gates
+  # every day's build/v1 on load, at a larger scale.
+  load-smoke-pr:
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'load-test')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: load-smoke
+        run: make load-smoke
+
+  nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@v0.11.0
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
+      - name: fuzz-long + chaos
+        run: make fuzz-long chaos
+      - name: soak (10k sessions, R3 at depth; goroutine/heap ceilings)
+        run: SOAK=1 go test -race -count=1 -tags=integration -run 'TestSoak10kSessions|TestSoakLongConnection' -v ./test/integration/...
+      - name: race soak (repeat everything 3x to catch flakes)
+        run: go test -race -count=3 ./...
+      - name: load-smoke (nightly scale, C=100 M=1000)
+        env:
+          LOADGEN_C: "100"
+          LOADGEN_M: "1000"
+          LOAD_SMOKE_OUT_DIR: /tmp/load-smoke-reports
+        run: make load-smoke
+      - name: upload load-smoke JSON reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-smoke-reports
+          path: /tmp/load-smoke-reports
+          if-no-files-found: ignore

@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("MAI\x00L\rFROM\r\r\n")
+uint16(4096)

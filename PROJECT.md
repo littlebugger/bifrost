@@ -1,4 +1,4 @@
-# smtp-balancer — Project Description
+# Bifrost — Project Description
 
 An SMTP-aware, cut-through load balancer. It sits between SMTP clients and a pool of destination SMTP servers, balances **each mail transaction independently** — even when a client sends thousands of messages over one long-lived connection — and relays server verdicts to the client **verbatim and immediately**, in both directions. Think *HAProxy's operability and configurability, applied at the SMTP-transaction layer instead of the TCP-connection layer*.
 
@@ -48,10 +48,12 @@ Adopted from Mireka/Baton: per-transaction backend attachment, real-time step-by
 
 | Client-visible event | Reply | Notes |
 |---|---|---|
-| Connection banner | **Synth** `220 <hostname> ESMTP` | configurable hostname/text |
+| Connection banner | **Synth** `220 <hostname> ESMTP` | configurable hostname (fixed text) |
 | `EHLO` | **Synth** `250-` multiline | static configured capability set (see policy below) |
 | `HELO` | **Synth** `250` | no extensions |
-| `STARTTLS` | **Synth** `220` → TLS handshake; `501` params present; `503` mid-transaction or already-TLS; `502` when not advertised (no cert configured) | RFC 3207; post-handshake state reset; no 454 trigger exists in v1, so 454 is not in the enum |
+| `STARTTLS` | **Synth** `220` → TLS handshake; `501` params present; `503` from the session's first MAIL until the next EHLO/HELO (latch) or when already-TLS; `502` when not advertised (no cert configured) | RFC 3207; post-handshake state reset; no 454 trigger exists in v1, so 454 is not in the enum |
+| `STARTTLS` with plaintext already pipelined behind it | **Synth** `421 4.7.0` + close — emitted **before** any `220`; the buffered plaintext is discarded and never interpreted | CVE-2011-0411 command-injection class; RFC 3207/2920 make STARTTLS a pipelining sync point |
+| `EHLO`/`HELO` with empty argument | **Synth** `501` | RFC 5321 4.1.1.1 requires a domain |
 | `NOOP` | **Synth** `250` | never touches a backend |
 | `QUIT` | **Synth** `221` + close | attached backend leg aborted/quit |
 | `RSET` (no backend attached) | **Synth** `250` | |
@@ -71,8 +73,8 @@ Adopted from Mireka/Baton: per-transaction backend attachment, real-time step-by
 | End-of-data verdict | **Relay** | the message's true fate, always |
 | Backend `421` while attached (pre-DATA) | **Translate → `451 4.4.2`**, drop backend, keep session | the one sanctioned rewrite: relaying 421 would falsely announce client-channel close |
 | Backend final reply mid-DATA (any non-354 final reply after relayed 354, before the dot) | **Relay it — it IS the transaction's single verdict** (a 421 here is translated → `451 4.4.2`). DATA is then answered: keep consuming client bytes to `CRLF.CRLF` (piping if the backend is still alive, discarding if dead), emit **nothing** after the dot, disarm the dot-reply timer, detach | exactly one reply per DATA, ever; the failure-synthesis rows below fire ONLY when no verdict was relayed |
-| Malformed backend reply (unparseable line, code outside 2xx–5xx, oversized) | treated as backend death at the current phase — the matching `451` row below applies | defensive bound, backend dropped |
-| All attach attempts fail at MAIL | **Synth** `451 4.4.1` (per queued command; RSET/NOOP in queue get `250`; a queued QUIT gets `221` + close) | silent retry across healthy backends first — safe only while zero backend bytes reached the client |
+| Malformed backend reply (unparseable line, code outside 2xx–5xx, oversized) | treated as backend death at the current phase — the matching `451` row below applies. **Exception:** if a continuation line of the same reply was already relayed, the connection is closed without further synthesis (a reply cannot be un-sent; injecting a 451 mid-multiline would corrupt the client's reply stream) | defensive bound, backend dropped |
+| All attach attempts fail at MAIL | **Synth** `451 4.4.1` per queued command **when every candidate failed to attach** (dial/handshake — RFC 3463 4.4.1 "no answer"); a candidate that attached and then failed keeps its own failure's reply (e.g. `451 4.4.2` on a reply timeout). The pipelining queue holds only MAIL + consecutive RCPTs + at most one DATA — RSET/NOOP/QUIT are never queued, the session main loop answers them | silent retry across healthy backends first — safe only while zero backend bytes reached the client |
 | Backend dies pre-354 | **Synth** `451 4.4.1` for pending commands | session survives |
 | Backend dies mid-DATA (no verdict relayed) | discard client bytes to `CRLF.CRLF`, then **Synth** `451 4.4.1` | session survives |
 | Backend dies after dot, before verdict | **Synth** `451 4.4.2` + duplicate-risk log event | inherent cut-through hazard, documented |
@@ -116,10 +118,10 @@ Full per-module test matrices (conditions × load × failure) live in the epics;
 | `internal/health` | Probe ladder L0–L3 (L0 = plain TCP without SMTP, k8s-tcpSocket-style; all levels honor an optional probe-port override), rise/fall FSM, jittered scheduler, passive signals (transport-only), admin states | router (gating), admin | 06: fake-clock FSM tables; flap scripts vs predicted transitions; 100-backend probe load with goleak |
 | `internal/balance` | Smooth WRR, leastconn, ordered failover candidates (healthy-filter → pick → shuffle rest → backups), rule engine (CIDR, MAIL FROM domain), in-flight counters, max_transactions | relay | 07/08: seeded-rand distribution properties; saturation chaos |
 | `internal/admin` + `internal/metrics` | HTTP/unix admin API (state/stats/weight/reload), Prometheus metrics, slog transaction records | operators | 09: API round-trips; drain-visibility integration |
-| `cmd/smtp-balancer` | wiring, signals (SIGTERM drain, SIGHUP reload) | — | 10: drain/reload-under-load chaos; timeout budget audit |
+| `cmd/bifrost` | wiring, signals (SIGTERM drain, SIGHUP reload) | — | 10: drain/reload-under-load chaos; timeout budget audit |
 | `cmd/loadgen`, `cmd/fakesmtp` | load generator (C×M, rate-paced, stdlib percentiles, `-direct` baseline), standalone fake | CI load gates | 11: ratio gates (p99 ≤ 2×direct+2ms), goroutine/RSS ceilings, soak |
 
-### Timeout budget (defaults; all configurable; validation rejects inverted hierarchies)
+### Timeout budget (defaults; all configurable except the two fixed grace bounds marked below; validation rejects inverted hierarchies)
 
 | Timer | Default | On expiry (exact reply) |
 |---|---|---|
@@ -133,6 +135,7 @@ Full per-module test matrices (conditions × load × failure) live in the epics;
 | backend final-dot reply | **600 s (RFC minimum, kept deliberately)** | `451 4.4.2` + duplicate-risk log |
 | drain: lame duck (healthz 503 before listener close) | 2 s | — |
 | drain: force deadline | 30 s | backend legs closed first (clean abort), then `421` + close |
+| goodbye-write grace (bound on writing a synthesized 421/221 after a deadline already expired) — **fixed**, not configurable (`closeGrace`, `goodbyeGrace`) | 5 s | write abandoned, connection closed |
 
 The RFC 5321 §4.5.3.2 values are **floors** (client-side minimum waits), not ceilings: config validation rejects only non-positive or internally inverted values, emits a **warning** (never an error) for values below the RFC floors, and imposes no upper caps. Defaults sit below the floors deliberately (documented deviation for a balancer between cooperating parties) except the dot-reply timer, which stays at the RFC floor because expiring early after a delivered dot manufactures duplicate mail.
 

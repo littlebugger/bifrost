@@ -1,6 +1,9 @@
 # binaries
 /bin/
 
+# goreleaser output
+/dist/
+
 # scratch
 /tmp/
 
@@ -13,3 +16,6 @@ testdata/fuzz/**/pending
 
 # agent tooling state, not part of the repo
 .superpowers/
+
+# macOS Finder artifacts
+.DS_Store

@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("MAIL FROM:<a@b>\r\nRCPT TO:<c@d>\r\nDATA\r\n")
+uint16(4096)
