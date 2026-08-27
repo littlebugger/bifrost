@@ -14,4 +14,4 @@ formatters:
     - gofumpt
   settings:
     gofumpt:
-      module-path: github.com/revolee/bifrost
+      module-path: github.com/littlebugger/bifrost

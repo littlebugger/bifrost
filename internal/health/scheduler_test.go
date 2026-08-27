@@ -9,7 +9,7 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // pending reports how many timers are registered on fc and not yet

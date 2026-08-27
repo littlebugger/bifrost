@@ -4,8 +4,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // twoPoolConfig has a b.com routing rule to "p2" and everything else

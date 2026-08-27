@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // probeFunc is the ladder's call signature — a seam so the scheduler's

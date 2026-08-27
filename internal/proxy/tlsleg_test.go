@@ -5,7 +5,7 @@ package proxy
 import (
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // The backend leg's TLS mode is the pool's business (the client leg's TLS

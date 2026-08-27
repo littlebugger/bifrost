@@ -1,6 +1,6 @@
 package balance
 
-import "github.com/revolee/bifrost/internal/config"
+import "github.com/littlebugger/bifrost/internal/config"
 
 // Leastconn picks the server with the fewest in-flight transactions,
 // weight-adjusted: a server carrying 2 transactions at weight 2 is

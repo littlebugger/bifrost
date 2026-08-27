@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/smtpdrv"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/smtpdrv"
 )
 
 // TestPercentileMath is the unit half of the plan's percentile claim:

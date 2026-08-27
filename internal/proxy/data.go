@@ -4,8 +4,8 @@ import (
 	"errors"
 	"os"
 
-	"github.com/revolee/bifrost/internal/backend"
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/backend"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // This file is DATA: the relayed 354, the raw body pipe, and the single

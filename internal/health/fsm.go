@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // fastinter is the probe cadence while a server is transitioning (a

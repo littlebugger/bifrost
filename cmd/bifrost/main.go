@@ -13,8 +13,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".

@@ -4,8 +4,8 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 func routing(defaultPool string, rules ...config.RoutingRule) config.Routing {

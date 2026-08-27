@@ -25,8 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // maxReplyLine and maxReplyTotal bound one handshake reply the same way

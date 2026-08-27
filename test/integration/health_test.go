@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/health"
 )
 
 // startChecker builds a Checker over cfg with the real clock, running

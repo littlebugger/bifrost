@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/revolee/bifrost/internal/admin"
-	"github.com/revolee/bifrost/internal/balance"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/health"
-	"github.com/revolee/bifrost/internal/metrics"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/admin"
+	"github.com/littlebugger/bifrost/internal/balance"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/metrics"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // This file is the whole assembly: every internal package meets here and

@@ -3,7 +3,7 @@ package proxy
 import (
 	"errors"
 
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // Two-class error latching, decision D12 and the Transparency Contract's

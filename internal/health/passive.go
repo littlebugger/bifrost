@@ -1,6 +1,6 @@
 package health
 
-import "github.com/revolee/bifrost/internal/config"
+import "github.com/littlebugger/bifrost/internal/config"
 
 // DialFailure implements proxy.HealthSignals: an attach attempt that
 // never became a usable backend leg.

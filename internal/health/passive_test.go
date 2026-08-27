@@ -3,7 +3,7 @@ package health
 import (
 	"testing"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // TestPassiveEventsCount: DialFailure/TransportError both grow the same

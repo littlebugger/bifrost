@@ -4,7 +4,7 @@ project_name: bifrost
 
 release:
   github:
-    owner: revolee
+    owner: littlebugger
     name: bifrost
 
 builds:

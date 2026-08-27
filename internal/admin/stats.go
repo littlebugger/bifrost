@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/revolee/bifrost/internal/metrics"
+	"github.com/littlebugger/bifrost/internal/metrics"
 )
 
 // totalsView is GET /stats' balancer-wide half.

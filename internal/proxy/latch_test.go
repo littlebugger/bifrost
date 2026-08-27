@@ -5,7 +5,7 @@ package proxy
 import (
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // Two-class latching (decision D12): transaction-fatal errors latch until

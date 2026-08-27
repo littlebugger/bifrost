@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/revolee/bifrost/internal/smtpdrv"
+	"github.com/littlebugger/bifrost/internal/smtpdrv"
 )
 
 // Config is one load run's parameters.

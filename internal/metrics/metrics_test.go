@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/balance"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/balance"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/health"
 )
 
 // closedAddr returns a loopback address nothing is listening on —

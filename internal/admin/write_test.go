@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/balance"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/health"
-	"github.com/revolee/bifrost/internal/metrics"
+	"github.com/littlebugger/bifrost/internal/balance"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/metrics"
 )
 
 // do posts body (a JSON string) to path against h and decodes the

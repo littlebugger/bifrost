@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 func TestDrvExpectMultiline(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // dialListener connects to addr and returns the raw connection plus a

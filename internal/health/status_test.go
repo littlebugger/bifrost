@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // varResultProber is a probeFunc whose canned result can change between

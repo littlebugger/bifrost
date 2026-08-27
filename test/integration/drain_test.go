@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // Epic-10 Task 2: SIGTERM drain. The sequence PROJECT.md specifies is an

@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/revolee/bifrost/internal/backend"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/backend"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // goAhead is DATA's go-ahead code: the one reply code the relay keys a

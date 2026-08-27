@@ -7,7 +7,7 @@ package balance
 import (
 	"sync"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // svrKey identifies a server by its stable (pool, server) name pair, not

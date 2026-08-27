@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/smtpdrv"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/smtpdrv"
 )
 
 // Epic-10 Task 1: the assembled process. These tests drive the real

@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/admin"
-	"github.com/revolee/bifrost/internal/balance"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/health"
-	"github.com/revolee/bifrost/internal/metrics"
-	"github.com/revolee/bifrost/internal/proxy"
-	"github.com/revolee/bifrost/internal/smtpdrv"
+	"github.com/littlebugger/bifrost/internal/admin"
+	"github.com/littlebugger/bifrost/internal/balance"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/metrics"
+	"github.com/littlebugger/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/smtpdrv"
 )
 
 // This file is epic-09 Task 5's M2 slice: the drain-visibility proof.

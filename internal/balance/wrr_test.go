@@ -3,7 +3,7 @@ package balance
 import (
 	"testing"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // srv is a test-only *config.Server builder: name and weight are all any

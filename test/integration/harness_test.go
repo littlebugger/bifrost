@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // This file is epic-10's harness: it drives the REAL bifrost binary as a

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // TestBackendStartTLS proves the whole RFC 3207 upgrade: STARTTLS, the

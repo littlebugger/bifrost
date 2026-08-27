@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 func TestSendLineVerbatim(t *testing.T) {

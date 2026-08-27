@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/hashicorp/hcl/v2"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // reload is SIGHUP: re-read the config file, and publish it only if it is

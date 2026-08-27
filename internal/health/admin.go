@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // SetAdminState sets (pool, server)'s admin state — READY, DRAIN, or

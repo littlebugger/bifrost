@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/health"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // Epic-10 Task 5, backend-side scenarios. What each of these adds over the

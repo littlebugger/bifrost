@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // fakeClock is the Clock test double every fake-clock unit test in this

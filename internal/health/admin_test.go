@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // waitCallCount polls (bounded) until *n reaches at least want.

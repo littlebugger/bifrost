@@ -1,4 +1,4 @@
-module github.com/revolee/bifrost
+module github.com/littlebugger/bifrost
 
 go 1.25.0
 

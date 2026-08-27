@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/smtpdrv"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/smtpdrv"
 )
 
 // This file is epic-11's soak suite: sustained-volume and R3-at-depth

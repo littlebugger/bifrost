@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // TestMain wraps this package's whole integration-tagged test run in

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // The commands a client can send while a backend is attached, and the

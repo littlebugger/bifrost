@@ -6,8 +6,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/health"
 )
 
 // This file is epic-09's write half: set state/override/weight per

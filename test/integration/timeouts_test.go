@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // Epic-10 Task 4: every row of PROJECT.md's timeout budget, driven

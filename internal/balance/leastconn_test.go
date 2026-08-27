@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // TestLeaseRelease proves Lease's in-flight counter is correct under 100

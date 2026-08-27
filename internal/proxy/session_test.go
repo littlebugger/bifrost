@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // Every reply asserted in this package's tests is written out as a

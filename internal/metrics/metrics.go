@@ -30,9 +30,9 @@ package metrics
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/revolee/bifrost/internal/balance"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/balance"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/health"
 )
 
 // Metrics holds Bifrost's push-based counters/gauges: the traffic-plane

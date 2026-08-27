@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/balance"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/health"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/balance"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // This file is the shared harness for epic-10's named chaos scenarios:

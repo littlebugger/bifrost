@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/revolee/bifrost/internal/backend"
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/backend"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // maxProbeLine and maxProbeTotal bound a probe's own hand-rolled reply

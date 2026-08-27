@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // TestTxnLogNeverLogsBody is the privacy rule, proven for real: an

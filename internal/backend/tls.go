@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // errStartTLSNotOffered is wrapped in a *HandshakeError when opts.TLSMode

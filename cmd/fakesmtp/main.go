@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 func main() {

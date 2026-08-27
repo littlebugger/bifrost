@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 func TestSupersetOK(t *testing.T) {

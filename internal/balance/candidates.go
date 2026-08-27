@@ -3,7 +3,7 @@ package balance
 import (
 	"math/rand"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // EligibleFunc reports whether (pool, server) is currently usable —

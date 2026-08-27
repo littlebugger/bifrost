@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // maxCommandLine caps a client command line, terminator included. Over

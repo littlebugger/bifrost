@@ -4,7 +4,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/revolee/bifrost/internal/smtpwire"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // Class identifies which phase of a mail transaction a backend command

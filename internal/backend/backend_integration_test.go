@@ -11,7 +11,7 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // TestMain wraps the whole package's test run in goleak: every test in

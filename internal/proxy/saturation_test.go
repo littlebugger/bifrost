@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // capPickAt1 is a PickFunc that hands back srv while leases has nothing

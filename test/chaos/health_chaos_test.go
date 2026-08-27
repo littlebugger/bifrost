@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/health"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/health"
 )
 
 // Epic-10 Task 5, health scenarios: probes and traffic sharing one

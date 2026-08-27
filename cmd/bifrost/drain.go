@@ -3,7 +3,7 @@ package main
 import (
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // goodbyeGrace bounds process exit once the drain has said everything it

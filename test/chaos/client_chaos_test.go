@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revolee/bifrost/internal/config"
-	"github.com/revolee/bifrost/internal/fakesmtp"
-	"github.com/revolee/bifrost/internal/proxy"
+	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/proxy"
 )
 
 // Epic-10 Task 5, client-side scenarios: what a hostile, broken or simply

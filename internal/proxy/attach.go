@@ -5,8 +5,8 @@ import (
 	"crypto/tls"
 	"errors"
 
-	"github.com/revolee/bifrost/internal/backend"
-	"github.com/revolee/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/backend"
+	"github.com/littlebugger/bifrost/internal/config"
 )
 
 // This file is the backend leg's lifecycle: walking the candidates,

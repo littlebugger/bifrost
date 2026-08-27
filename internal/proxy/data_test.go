@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revolee/bifrost/internal/fakesmtp"
+	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
 
 // DATA is where R4 is won or lost: the 354 is never synthesized, the body
