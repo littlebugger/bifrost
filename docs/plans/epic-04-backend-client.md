@@ -1,6 +1,6 @@
 # Epic 04: Backend-Leg Client
 
-> Part of **smtp-balancer** — read `/PROJECT.md` first. Depends on epics 00, 01, 02, 03 (uses `internal/smtpwire`).
+> Part of **Bifrost** — read `/PROJECT.md` first. Depends on epics 00, 01, 02, 03 (uses `internal/smtpwire`).
 > One task per fresh-context agent session, in order. TDD; commit after each task.
 
 ## Overview
@@ -56,33 +56,33 @@ All against `internal/fakesmtp`. Conditions: compliant handshake; multiline gree
 **Files:**
 - Create: `internal/backend/backend.go`, `internal/backend/caps.go`, `internal/backend/backend_test.go`
 
-- [ ] **Step 1:** failing tests: `TestDialHappyPath` (fake with caps → Conn.Caps() has PIPELINING, SIZE parsed as int, 8BITMIME), `TestDialMultilineGreeting` (220-a/220 b), `TestDialBadGreeting` (fake banner `554 no` → HandshakeError), `TestDialRefused` (SetDown ListenerClosed → DialError), `TestDialGreetingTimeout` (AcceptThenHang + short timeout → HandshakeError, distinct from DialError), `TestEhloRejected` (Script.OnEHLO `[502]` → HandshakeError)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement with `net.Dialer.DialContext`, smtpwire.ReplyReader for greeting/EHLO, CapSet parse (`NAME` or `NAME value` per line, case-insensitive names)
-- [ ] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestDialHappyPath TestDialMultilineGreeting TestDialBadGreeting TestDialRefused TestDialGreetingTimeout TestEhloRejected'`
-- [ ] **Step 5:** commit `feat(backend): dial + handshake + capability parse`
+- [x] **Step 1:** failing tests: `TestDialHappyPath` (fake with caps → Conn.Caps() has PIPELINING, SIZE parsed as int, 8BITMIME), `TestDialMultilineGreeting` (220-a/220 b), `TestDialBadGreeting` (fake banner `554 no` → HandshakeError), `TestDialRefused` (SetDown ListenerClosed → DialError), `TestDialGreetingTimeout` (AcceptThenHang + short timeout → HandshakeError, distinct from DialError), `TestEhloRejected` (Script.OnEHLO `[502]` → HandshakeError)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement with `net.Dialer.DialContext`, smtpwire.ReplyReader for greeting/EHLO, CapSet parse (`NAME` or `NAME value` per line, case-insensitive names)
+- [x] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestDialHappyPath TestDialMultilineGreeting TestDialBadGreeting TestDialRefused TestDialGreetingTimeout TestEhloRejected'`
+- [x] **Step 5:** commit `feat(backend): dial + handshake + capability parse`
 
 ### Task 2: Capability superset check
 
 **Files:**
 - Create: `internal/backend/superset.go`, tests in `internal/backend/superset_test.go`
 
-- [ ] **Step 1:** failing tests: `TestSupersetOK` (backend caps ⊇ required incl SIZE 20M ≥ required 10M), `TestSupersetMissingCapability` (`backend-missing-capability-marked-out`: required 8BITMIME absent → IncompatibleError{Missing:["8BITMIME"]}), `TestSupersetSizeTooSmall` (`advertised-size-le-min-backend-size`: SIZE 5M < required 10M → IncompatibleError naming SIZE), `TestSupersetSizeZeroUnlimited` (`SIZE 0` satisfies required 10M — RFC 1870 unlimited), `TestSupersetSizeBareKeyword` (bare `SIZE` likewise unlimited), `TestSupersetIgnoresStarttls` (STARTTLS in required set is ignored entirely: pool backend_tls=none + plaintext backend without STARTTLS → compatible; pool backend_tls=starttls → TLS enforced by the handshake itself, not by the capability comparison)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement; wire into Dial as final step
-- [ ] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestSupersetOK TestSupersetMissingCapability TestSupersetSizeTooSmall TestSupersetSizeZeroUnlimited TestSupersetSizeBareKeyword TestSupersetIgnoresStarttls'`
-- [ ] **Step 5:** commit `feat(backend): capability superset verification`
+- [x] **Step 1:** failing tests: `TestSupersetOK` (backend caps ⊇ required incl SIZE 20M ≥ required 10M), `TestSupersetMissingCapability` (`backend-missing-capability-marked-out`: required 8BITMIME absent → IncompatibleError{Missing:["8BITMIME"]}), `TestSupersetSizeTooSmall` (`advertised-size-le-min-backend-size`: SIZE 5M < required 10M → IncompatibleError naming SIZE), `TestSupersetSizeZeroUnlimited` (`SIZE 0` satisfies required 10M — RFC 1870 unlimited), `TestSupersetSizeBareKeyword` (bare `SIZE` likewise unlimited), `TestSupersetIgnoresStarttls` (STARTTLS in required set is ignored entirely: pool backend_tls=none + plaintext backend without STARTTLS → compatible; pool backend_tls=starttls → TLS enforced by the handshake itself, not by the capability comparison)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement; wire into Dial as final step
+- [x] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestSupersetOK TestSupersetMissingCapability TestSupersetSizeTooSmall TestSupersetSizeZeroUnlimited TestSupersetSizeBareKeyword TestSupersetIgnoresStarttls'`
+- [x] **Step 5:** commit `feat(backend): capability superset verification`
 
 ### Task 3: Backend-leg STARTTLS
 
 **Files:**
 - Create: `internal/backend/tls.go`, tests in `internal/backend/tls_test.go`
 
-- [ ] **Step 1:** failing tests: `TestBackendStartTLS` (fake with TLS → handshake, re-EHLO, Caps() from SECOND EHLO), `TestBackendStartTLSVerifyBadCert` (verify mode + untrusted cert → HandshakeError), `TestBackendStartTLSNoVerify` (same cert, mode starttls → ok), `TestBackendTLSRequiredMismatch` (fake requires TLS via 530-before-MAIL script, TLSMode none → later commands fail; and: fake NOT advertising STARTTLS while TLSMode starttls → HandshakeError "STARTTLS not offered")
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement (`tls.Client` wrap, rebuild bufio, second EHLO replaces CapSet)
-- [ ] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestBackendStartTLS TestBackendStartTLSVerifyBadCert TestBackendStartTLSNoVerify TestBackendTLSRequiredMismatch'`
-- [ ] **Step 5:** commit `feat(backend): backend-leg starttls with re-EHLO`
+- [x] **Step 1:** failing tests: `TestBackendStartTLS` (fake with TLS → handshake, re-EHLO, Caps() from SECOND EHLO), `TestBackendStartTLSVerifyBadCert` (verify mode + untrusted cert → HandshakeError), `TestBackendStartTLSNoVerify` (same cert, mode starttls → ok), `TestBackendTLSRequiredMismatch` (fake requires TLS via 530-before-MAIL script, TLSMode none → later commands fail; and: fake NOT advertising STARTTLS while TLSMode starttls → HandshakeError "STARTTLS not offered")
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement (`tls.Client` wrap, rebuild bufio, second EHLO replaces CapSet)
+- [x] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestBackendStartTLS TestBackendStartTLSVerifyBadCert TestBackendStartTLSNoVerify TestBackendTLSRequiredMismatch'`
+- [x] **Step 5:** commit `feat(backend): backend-leg starttls with re-EHLO`
 
 ### Task 4: Command send, deadlines, teardown, concurrency hygiene
 
@@ -90,8 +90,8 @@ All against `internal/fakesmtp`. Conditions: compliant handshake; multiline gree
 - Create: `internal/backend/conn.go` (SendLine/Replies/SetCommandClass/Writer/Quit/Abort), tests in `internal/backend/conn_test.go`; Create: `internal/backend/backend_integration_test.go` (tag `integration`, goleak TestMain)
 - Modify: `internal/backend/backend.go` (whole-phase handshake budget: one `context.WithTimeout` around greeting+EHLO+TLS)
 
-- [ ] **Step 1:** failing tests: `TestSendLineVerbatim` (raw bytes with odd spacing/params arrive byte-exact at fake — Recorder assert), `TestCommandClassDeadlines` (MailRcpt class 30s default; with test-shortened timeouts a hanging fake trips the deadline error), `TestQuitBestEffort` (Quit returns ≤2s even against a hang; fake with normal script records QUIT), `TestAbortNoDotNoQuit` (Abort mid-DATA: fake session sees EOF, transcript contains NO terminator dot and NO QUIT — the RFC 3.8 abort proof), `TestHandshakePhaseDeadline` (fake DRIPS the greeting at 1 byte/s — each byte resets a naive per-read deadline, only the whole-phase budget catches it; shortened test budget 1s), `TestDialCtxCancelMidConnect` (cancel during hang → returns promptly, no goroutine leak), `TestHundredConcurrentDials` (integration: 100 goroutines dial one fake; all succeed or fail typed; goleak clean)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement; deadlines armed per class before each read; Writer() re-arms DataBlock deadline per write; phase budget wraps the whole handshake; `go get go.uber.org/goleak` here (test-only — its first use in the plan)
-- [ ] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestSendLineVerbatim TestCommandClassDeadlines TestQuitBestEffort TestAbortNoDotNoQuit TestHandshakePhaseDeadline TestDialCtxCancelMidConnect'` and `make verify-new PKG=./internal/backend TESTS='TestHundredConcurrentDials' TAGS=integration` and `make integration`
-- [ ] **Step 5:** commit `feat(backend): verbatim send, class deadlines, quit/abort, handshake budget`
+- [x] **Step 1:** failing tests: `TestSendLineVerbatim` (raw bytes with odd spacing/params arrive byte-exact at fake — Recorder assert), `TestCommandClassDeadlines` (MailRcpt class 30s default; with test-shortened timeouts a hanging fake trips the deadline error), `TestQuitBestEffort` (Quit returns ≤2s even against a hang; fake with normal script records QUIT), `TestAbortNoDotNoQuit` (Abort mid-DATA: fake session sees EOF, transcript contains NO terminator dot and NO QUIT — the RFC 3.8 abort proof), `TestHandshakePhaseDeadline` (fake DRIPS the greeting at 1 byte/s — each byte resets a naive per-read deadline, only the whole-phase budget catches it; shortened test budget 1s), `TestDialCtxCancelMidConnect` (cancel during hang → returns promptly, no goroutine leak), `TestHundredConcurrentDials` (integration: 100 goroutines dial one fake; all succeed or fail typed; goleak clean)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement; deadlines armed per class before each read; Writer() re-arms DataBlock deadline per write; phase budget wraps the whole handshake; `go get go.uber.org/goleak` here (test-only — its first use in the plan)
+- [x] **Step 4:** `make verify-new PKG=./internal/backend TESTS='TestSendLineVerbatim TestCommandClassDeadlines TestQuitBestEffort TestAbortNoDotNoQuit TestHandshakePhaseDeadline TestDialCtxCancelMidConnect'` and `make verify-new PKG=./internal/backend TESTS='TestHundredConcurrentDials' TAGS=integration` and `make integration`
+- [x] **Step 5:** commit `feat(backend): verbatim send, class deadlines, quit/abort, handshake budget`

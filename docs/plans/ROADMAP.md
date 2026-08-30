@@ -1,4 +1,4 @@
-# smtp-balancer — Implementation Roadmap
+# Bifrost — Implementation Roadmap
 
 > No checkboxes here by design — ralphex-executable task checklists live only in the epic files.
 > Spec: `/PROJECT.md`. Epic files: `docs/plans/epic-NN-*.md` (62 tasks total across epics 00–11).

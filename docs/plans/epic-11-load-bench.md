@@ -1,6 +1,6 @@
 # Epic 11: Load Generator & Performance Gates
 
-> Part of **smtp-balancer** — read `/PROJECT.md` first. Depends on epics 01, 10.
+> Part of **Bifrost** — read `/PROJECT.md` first. Depends on epics 01, 10.
 > One task per fresh-context agent session, in order. TDD; commit after each task.
 
 ## Overview
@@ -34,39 +34,39 @@ The loadgen itself is table-tested (histogram math, rate pacing). Load: the gate
 **Files:**
 - Create: `cmd/loadgen/main.go`, `cmd/loadgen/run.go`, `cmd/loadgen/run_test.go`, `cmd/fakesmtp/main.go`
 
-- [ ] **Step 1:** failing tests: `TestLoadgenAgainstFake` (in-process: C=4, M=10 against fakesmtp → sent=40, errors=0, percentiles populated and ordered p50≤p95≤p99≤max), `TestLoadgenCountsRefusals` (fake scripted 451s → typed error counts, no hang), `TestLoadgenRatePacing` (rate=100 → duration ≈ expected ±20%), `TestPercentileMath` (unit: known latency slice → exact p50/p95/p99), `TestFakesmtpBinaryFlags` (os/exec cmd/fakesmtp with -caps/-delay; smtpdrv talks to it)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement (reuse `internal/smtpdrv`; stdlib only — no new deps)
-- [ ] **Step 4:** `make verify-new PKG=./cmd/loadgen TESTS='TestLoadgenAgainstFake TestLoadgenCountsRefusals TestLoadgenRatePacing TestPercentileMath TestFakesmtpBinaryFlags'`
-- [ ] **Step 5:** commit `feat(loadgen): client load generator + standalone fake`
+- [x] **Step 1:** failing tests: `TestLoadgenAgainstFake` (in-process: C=4, M=10 against fakesmtp → sent=40, errors=0, percentiles populated and ordered p50≤p95≤p99≤max), `TestLoadgenCountsRefusals` (fake scripted 451s → typed error counts, no hang), `TestLoadgenRatePacing` (rate=100 → duration ≈ expected ±20%), `TestPercentileMath` (unit: known latency slice → exact p50/p95/p99), `TestFakesmtpBinaryFlags` (os/exec cmd/fakesmtp with -caps/-delay; smtpdrv talks to it)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement (reuse `internal/smtpdrv`; stdlib only — no new deps)
+- [x] **Step 4:** `make verify-new PKG=./cmd/loadgen TESTS='TestLoadgenAgainstFake TestLoadgenCountsRefusals TestLoadgenRatePacing TestPercentileMath TestFakesmtpBinaryFlags'`
+- [x] **Step 5:** commit `feat(loadgen): client load generator + standalone fake`
 
 ### Task 2: load-smoke gate
 
 **Files:**
 - Create: `scripts/load_smoke.sh`; Modify: `Makefile` (replace placeholder)
 
-- [ ] **Step 1:** write `load_smoke.sh`: build; start 2 `cmd/fakesmtp`; run loadgen `-direct` for baseline JSON; start balancer with generated minimal config; run loadgen through proxy (C=50 M=200 rate=500 size=4096); assert gates with jq-free awk/python3 one-liner; retry whole run once on gate failure; kill everything on exit trap
-- [ ] **Step 2:** `make load-smoke` exits 0 locally; deliberately break a gate (set budget to 0ms) → exits 1 → restore
-- [ ] **Step 3:** wire into CI nightly job + PR-label-gated run
-- [ ] **Step 4:** commit `feat(ci): load-smoke ratio gate`
+- [x] **Step 1:** write `load_smoke.sh`: build; start 2 `cmd/fakesmtp`; run loadgen `-direct` for baseline JSON; start balancer with generated minimal config; run loadgen through proxy (C=50 M=200 rate=500 size=4096); assert gates with jq-free awk/python3 one-liner; retry whole run once on gate failure; kill everything on exit trap
+- [x] **Step 2:** `make load-smoke` exits 0 locally; deliberately break a gate (set budget to 0ms) → exits 1 → restore
+- [x] **Step 3:** wire into CI nightly job + PR-label-gated run (landed in Task 4's `.github/workflows/ci.yml` change: `nightly` job + label-gated `load-smoke-pr` job)
+- [x] **Step 4:** commit `feat(ci): load-smoke ratio gate`
 
 ### Task 3: Soak + memory ceiling
 
 **Files:**
 - Create: `test/integration/soak_test.go` (tag integration; skipped unless `-short=false` && env SOAK=1)
 
-- [ ] **Step 1:** failing tests: `TestSoak10kSessions` (10k sequential+parallel short sessions; NumGoroutine flat ±2 vs baseline; HeapAlloc non-increasing across 3 GC'd checkpoints), `TestSoakLongConnection` (1 connection × 5k messages across 2 fakes — R3 at depth; distribution within tolerance; zero errors)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** fix leaks/retention it surfaces
-- [ ] **Step 4:** `SOAK=1 make verify-new PKG=./test/integration TESTS='TestSoak10kSessions TestSoakLongConnection' TAGS=integration`
-- [ ] **Step 5:** commit `test: soak + memory ceilings`
+- [x] **Step 1:** failing tests: `TestSoak10kSessions` (10k sequential+parallel short sessions; NumGoroutine flat ±2 vs baseline; HeapAlloc non-increasing across 3 GC'd checkpoints), `TestSoakLongConnection` (1 connection × 5k messages across 2 fakes — R3 at depth; distribution within tolerance; zero errors)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** fix leaks/retention it surfaces (none surfaced: goroutines stayed exactly flat at baseline across all 3 rounds; heap grew ~4.8 MiB/round, well inside the 8 MiB slack and the 64 MiB ceiling — see soak_test.go's comment on the fake backends' own accumulating Sessions() history)
+- [x] **Step 4:** `SOAK=1 make verify-new PKG=./test/integration TESTS='TestSoak10kSessions TestSoakLongConnection' TAGS=integration`
+- [x] **Step 5:** commit `test: soak + memory ceilings`
 
 ### Task 4: Nightly full load + docs
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`; Create: `docs/performance.md`
 
-- [ ] **Step 1:** nightly job: `load_smoke.sh` with C=100 M=1000 + soak env; upload JSON artifacts
-- [ ] **Step 2:** `docs/performance.md`: methodology (ratio gates, why), current numbers table (filled by first nightly), tuning knobs (maxconn, timeouts, GOMAXPROCS note)
-- [ ] **Step 3:** `make lint` clean; CI config valid (actionlint if available)
-- [ ] **Step 4:** commit `feat(ci): nightly load + performance docs`
+- [x] **Step 1:** nightly job: `load_smoke.sh` with C=100 M=1000 + soak env; upload JSON artifacts
+- [x] **Step 2:** `docs/performance.md`: methodology (ratio gates, why), current numbers table (filled by first nightly), tuning knobs (maxconn, timeouts, GOMAXPROCS note)
+- [x] **Step 3:** `make lint` clean; CI config valid (manually reviewed + `python3 -c "import yaml..."` parse check; actionlint not available locally)
+- [x] **Step 4:** commit `feat(ci): nightly load + performance docs`

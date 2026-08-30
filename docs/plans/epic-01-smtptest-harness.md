@@ -1,6 +1,6 @@
 # Epic 01: SMTP Test Harness (fakesmtp + smtpdrv)
 
-> Part of **smtp-balancer** — read `/PROJECT.md` first. Depends on epic-00.
+> Part of **Bifrost** — read `/PROJECT.md` first. Depends on epic-00.
 > One task per fresh-context agent session, in order. TDD; commit after each task.
 
 ## Overview
@@ -27,7 +27,7 @@ type Script struct {
     Caps   []string      // EHLO 250- lines, e.g. "PIPELINING", "SIZE 10485760", "8BITMIME"
     TLS    *tls.Config   // nil => STARTTLS not advertised
     OnEHLO []Step        // empty => default 250- reply built from Caps (epics 04/06 script EHLO rejections)
-    OnMAIL, OnRCPT, OnDATA, OnEOD, OnRSET, OnQUIT []Step // consumed per call; LAST STEP REPEATS
+    OnMAIL, OnRCPT, OnDATA, OnEOD, OnRSET, OnQUIT []Step // consumed per call WITHIN one session; LAST STEP REPEATS; cursors are per-session — cross-connection sequences (e.g. 4xx on conn 1, 250 on conn 2) are driven with SetScript between attempts
     DiscardBody bool     // recorder skips body accumulation (1 GB streaming tests)
 }
 type Step struct {
@@ -74,63 +74,63 @@ The harness itself must be trustworthy: **fakesmtp is validated against stdlib `
 **Files:**
 - Create: `internal/fakesmtp/fakesmtp.go`, `internal/fakesmtp/fakesmtp_test.go`
 
-- [ ] **Step 1:** write failing tests `TestFakeBannerEHLOQuit` (dial raw, read scripted banner, EHLO → 250- caps lines, QUIT → 221) and `TestFakeAgainstStdlibClient` (`net/smtp.SendMail` through the fake with default Script succeeds)
-- [ ] **Step 2:** run: both fail (package empty)
-- [ ] **Step 3:** implement `Start/Addr/Stop`, session loop: banner Step, EHLO/HELO → `250-`caps reply, MAIL/RCPT/DATA/EOD/RSET/QUIT default 250/354/250/221 replies, per-session goroutine, `t.Cleanup(Stop)`
-- [ ] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestFakeBannerEHLOQuit TestFakeAgainstStdlibClient'`
-- [ ] **Step 5:** commit `feat(fakesmtp): core scripted server`
+- [x] **Step 1:** write failing tests `TestFakeBannerEHLOQuit` (dial raw, read scripted banner, EHLO → 250- caps lines, QUIT → 221) and `TestFakeAgainstStdlibClient` (`net/smtp.SendMail` through the fake with default Script succeeds)
+- [x] **Step 2:** run: both fail (package empty)
+- [x] **Step 3:** implement `Start/Addr/Stop`, session loop: banner Step, EHLO/HELO → `250-`caps reply, MAIL/RCPT/DATA/EOD/RSET/QUIT default 250/354/250/221 replies, per-session goroutine, `t.Cleanup(Stop)`
+- [x] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestFakeBannerEHLOQuit TestFakeAgainstStdlibClient'`
+- [x] **Step 5:** commit `feat(fakesmtp): core scripted server`
 
 ### Task 2: Step sequences + actions
 
 **Files:**
 - Modify: `internal/fakesmtp/fakesmtp.go`; Create: `internal/fakesmtp/steps.go`, tests in `internal/fakesmtp/steps_test.go`
 
-- [ ] **Step 1:** failing tests: `TestStepSequenceConsumedLastRepeats` (OnRCPT `[450, 250]` → first RCPT 450, all later 250), `TestOnEHLOScripted` (OnEHLO `[502]` → EHLO rejected; empty OnEHLO → default 250- from Caps), `TestStepDelay` (reply arrives after Delay), `TestStepDrip` (bytes paced), `TestActDropConn` (clean EOF after MAIL), `TestActRST` (`SetLinger(0)` → connection reset observed), `TestActHang` (no reply until server Stop)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement per-verb Step queues (mutex-guarded; last repeats), Delay/Drip in the writer, Actions (RST via `TCPConn.SetLinger(0)` + Close; Hang blocks on server ctx)
-- [ ] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestStepSequenceConsumedLastRepeats TestOnEHLOScripted TestStepDelay TestStepDrip TestActDropConn TestActRST TestActHang'`
-- [ ] **Step 5:** commit `feat(fakesmtp): step sequences, delay/drip, drop/rst/hang actions`
+- [x] **Step 1:** failing tests: `TestStepSequenceConsumedLastRepeats` (OnRCPT `[450, 250]` → first RCPT 450, all later 250), `TestOnEHLOScripted` (OnEHLO `[502]` → EHLO rejected; empty OnEHLO → default 250- from Caps), `TestStepDelay` (reply arrives after Delay), `TestStepDrip` (bytes paced), `TestActDropConn` (clean EOF after MAIL), `TestActRST` (`SetLinger(0)` → connection reset observed), `TestActHang` (no reply until server Stop)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement per-verb Step queues (mutex-guarded; last repeats), Delay/Drip in the writer, Actions (RST via `TCPConn.SetLinger(0)` + Close; Hang blocks on server ctx)
+- [x] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestStepSequenceConsumedLastRepeats TestOnEHLOScripted TestStepDelay TestStepDrip TestActDropConn TestActRST TestActHang'`
+- [x] **Step 5:** commit `feat(fakesmtp): step sequences, delay/drip, drop/rst/hang actions`
 
 ### Task 3: Recorder — byte-exact transcripts
 
 **Files:**
 - Create: `internal/fakesmtp/recorder.go`, `internal/fakesmtp/recorder_test.go`
 
-- [ ] **Step 1:** failing tests: `TestRecorderTranscript` (verbs+raw lines in order), `TestRecorderWireBodyDotStuffed` — send via smtpdrv-style raw writes a body containing `\r\n..leading-dot\r\n`, `\r\n.\r` mid-line, bare `.` line escaped as `..`; assert `Messages()[0].WireBody` equals the stuffed bytes EXACTLY as sent (terminator excluded), `TestDialAndCmdCounters`, `TestAssertWireBodyHelper`
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement raw line reader (bufio, manual CRLF handling — **no textproto**), body capture until `CRLF.CRLF`, counters, helpers
-- [ ] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestRecorderTranscript TestRecorderWireBodyDotStuffed TestDialAndCmdCounters TestAssertWireBodyHelper'`
-- [ ] **Step 5:** commit `feat(fakesmtp): byte-exact recorder`
+- [x] **Step 1:** failing tests: `TestRecorderTranscript` (verbs+raw lines in order), `TestRecorderWireBodyDotStuffed` — send via smtpdrv-style raw writes a body containing `\r\n..leading-dot\r\n`, `\r\n.\r` mid-line, bare `.` line escaped as `..`; assert `Messages()[0].WireBody` equals the stuffed bytes EXACTLY as sent (terminator excluded), `TestDialAndCmdCounters`, `TestAssertWireBodyHelper`
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement raw line reader (bufio, manual CRLF handling — **no textproto**), body capture until `CRLF.CRLF`, counters, helpers
+- [x] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestRecorderTranscript TestRecorderWireBodyDotStuffed TestDialAndCmdCounters TestAssertWireBodyHelper'`
+- [x] **Step 5:** commit `feat(fakesmtp): byte-exact recorder`
 
 ### Task 4: Down-modes, script swap, event hooks
 
 **Files:**
 - Create: `internal/fakesmtp/down.go`, `internal/fakesmtp/down_test.go`
 
-- [ ] **Step 1:** failing tests: `TestDownListenerClosed` (dial refused), `TestDownAcceptThenRST` (accept then immediate reset), `TestDownAcceptThenHang` (accept, no banner), `TestSetUpRestores`, `TestSetScriptAtomicSwap` (mid-traffic swap; next session uses new script; no race under `-race`), `TestOnEventHook` (event fires on MAIL with correct verb, usable as chaos trigger channel), `TestHundredConcurrentSessions` (the load axis: 100 goroutines each run banner/EHLO/MAIL/RCPT/DATA/QUIT concurrently; assert `DialCount()==100`, 100 sessions each with an intact, complete transcript — the locking every later chaos/load epic leans on)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement; down-modes must be switchable while sessions are live
-- [ ] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestDownListenerClosed TestDownAcceptThenRST TestDownAcceptThenHang TestSetUpRestores TestSetScriptAtomicSwap TestOnEventHook TestHundredConcurrentSessions'`
-- [ ] **Step 5:** commit `feat(fakesmtp): down modes, script swap, event hooks`
+- [x] **Step 1:** failing tests: `TestDownListenerClosed` (dial refused), `TestDownAcceptThenRST` (accept then immediate reset), `TestDownAcceptThenHang` (accept, no banner), `TestSetUpRestores`, `TestSetScriptAtomicSwap` (mid-traffic swap; next session uses new script; no race under `-race`), `TestOnEventHook` (event fires on MAIL with correct verb, usable as chaos trigger channel), `TestHundredConcurrentSessions` (the load axis: 100 goroutines each run banner/EHLO/MAIL/RCPT/DATA/QUIT concurrently; assert `DialCount()==100`, 100 sessions each with an intact, complete transcript — the locking every later chaos/load epic leans on)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement; down-modes must be switchable while sessions are live
+- [x] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestDownListenerClosed TestDownAcceptThenRST TestDownAcceptThenHang TestSetUpRestores TestSetScriptAtomicSwap TestOnEventHook TestHundredConcurrentSessions'`
+- [x] **Step 5:** commit `feat(fakesmtp): down modes, script swap, event hooks`
 
 ### Task 5: STARTTLS in the fake + TestCert
 
 **Files:**
 - Create: `internal/fakesmtp/tls.go`, `internal/fakesmtp/tls_test.go`
 
-- [ ] **Step 1:** failing tests: `TestTestCertRoundTrip` (client cfg trusts server cfg), `TestFakeStartTLS` (Caps include STARTTLS iff Script.TLS != nil; STARTTLS → 220 → handshake → session continues; EHLO after TLS no longer lists STARTTLS), `TestFakeTLSRequiredReject` (script mode: 530 to MAIL before TLS)
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement `TestCert` (self-signed via crypto/x509, SANs `127.0.0.1`,`localhost`) and STARTTLS upgrade via `tls.Server`
-- [ ] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestTestCertRoundTrip TestFakeStartTLS TestFakeTLSRequiredReject'`
-- [ ] **Step 5:** commit `feat(fakesmtp): starttls + in-test certs`
+- [x] **Step 1:** failing tests: `TestTestCertRoundTrip` (client cfg trusts server cfg), `TestFakeStartTLS` (Caps include STARTTLS iff Script.TLS != nil; STARTTLS → 220 → handshake → session continues; EHLO after TLS no longer lists STARTTLS), `TestFakeTLSRequiredReject` (script mode: 530 to MAIL before TLS)
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement `TestCert` (self-signed via crypto/x509, SANs `127.0.0.1`,`localhost`) and STARTTLS upgrade via `tls.Server`
+- [x] **Step 4:** `make verify-new PKG=./internal/fakesmtp TESTS='TestTestCertRoundTrip TestFakeStartTLS TestFakeTLSRequiredReject'`
+- [x] **Step 5:** commit `feat(fakesmtp): starttls + in-test certs`
 
 ### Task 6: smtpdrv client driver
 
 **Files:**
 - Create: `internal/smtpdrv/smtpdrv.go`, `internal/smtpdrv/smtpdrv_test.go`
 
-- [ ] **Step 1:** failing tests (all against fakesmtp): `TestDrvExpectMultiline` (EHLO caps captured fully), `TestDrvPipelineExpectN` (one write MAIL/RCPT/RCPT/DATA, replies read in order), `TestDrvRawViolation` (bare-LF line delivered as-is; fake records raw), `TestDrvSendMsg` (returns final verdict; fake's WireBody matches), `TestDrvAbortMidData` (fake session sees EOF before terminator), `TestDrvStartTLS`
-- [ ] **Step 2:** run: fail
-- [ ] **Step 3:** implement over `net.Conn` + bufio (raw-preserving; textproto acceptable here ONLY for reply reading convenience — but prefer the same manual reader to avoid normalization surprises; decision: manual)
-- [ ] **Step 4:** `make verify-new PKG=./internal/smtpdrv TESTS='TestDrvExpectMultiline TestDrvPipelineExpectN TestDrvRawViolation TestDrvSendMsg TestDrvAbortMidData TestDrvStartTLS'`
-- [ ] **Step 5:** commit `feat(smtpdrv): scripted test client`
+- [x] **Step 1:** failing tests (all against fakesmtp): `TestDrvExpectMultiline` (EHLO caps captured fully), `TestDrvPipelineExpectN` (one write MAIL/RCPT/RCPT/DATA, replies read in order), `TestDrvRawViolation` (bare-LF line delivered as-is; fake records raw), `TestDrvSendMsg` (returns final verdict; fake's WireBody matches), `TestDrvAbortMidData` (fake session sees EOF before terminator), `TestDrvStartTLS`
+- [x] **Step 2:** run: fail
+- [x] **Step 3:** implement over `net.Conn` + bufio (raw-preserving; textproto acceptable here ONLY for reply reading convenience — but prefer the same manual reader to avoid normalization surprises; decision: manual)
+- [x] **Step 4:** `make verify-new PKG=./internal/smtpdrv TESTS='TestDrvExpectMultiline TestDrvPipelineExpectN TestDrvRawViolation TestDrvSendMsg TestDrvAbortMidData TestDrvStartTLS'`
+- [x] **Step 5:** commit `feat(smtpdrv): scripted test client`
