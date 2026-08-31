@@ -49,21 +49,16 @@ func TestSupersetSizeTooSmall(t *testing.T) {
 	}
 }
 
-// TestSupersetSizeAbsentFails: a backend that never advertises the SIZE
-// extension at all is not the same as one that advertises it bare or as
-// "SIZE 0" — it made no size promise, so it fails a non-zero requirement
-// instead of passing as unlimited.
-func TestSupersetSizeAbsentFails(t *testing.T) {
+// TestSupersetSizeAbsentUnlimited: a backend that never advertises the
+// SIZE extension at all imposes no limit to compare against, so it
+// counts as unlimited and satisfies any requirement — real MTAs
+// (KumoMTA) run without SIZE.
+func TestSupersetSizeAbsentUnlimited(t *testing.T) {
 	caps := CapSet{"PIPELINING": ""} // no SIZE key at all
 	required := []string{"SIZE 10485760"}
 
-	err := checkSuperset(caps, required)
-	var ierr *IncompatibleError
-	if !errors.As(err, &ierr) {
-		t.Fatalf("checkSuperset() = %v (%T), want *IncompatibleError (SIZE absent is not unlimited)", err, err)
-	}
-	if len(ierr.Missing) != 1 || ierr.Missing[0] != "SIZE 10485760" {
-		t.Errorf("Missing = %v, want a SIZE-naming entry", ierr.Missing)
+	if err := checkSuperset(caps, required); err != nil {
+		t.Fatalf("checkSuperset() = %v, want nil (SIZE absent is unlimited)", err)
 	}
 }
 
