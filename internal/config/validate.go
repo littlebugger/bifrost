@@ -282,9 +282,11 @@ func validHexHash(h string) bool {
 }
 
 // validatePoolAuth checks a pool's backend-leg SMTP AUTH block: it must
-// only be used over an encrypted backend leg, and both credentials must
-// be present. Reuses controlCharIndex for the same injection reason as
-// validateListenerAuth.
+// only be used over an encrypted backend leg — both the traffic path
+// (backend_tls) and every health probe in the pool (check.tls, which can
+// override backend_tls per server or per pool, see resolveCheck) — and
+// both credentials must be present. Reuses controlCharIndex for the same
+// injection reason as validateListenerAuth.
 func validatePoolAuth(p Pool) hcl.Diagnostics {
 	auth := p.Auth
 	if auth == nil {
@@ -295,6 +297,10 @@ func validatePoolAuth(p Pool) hcl.Diagnostics {
 	if p.BackendTLS == "none" {
 		diags = append(diags, errDiag(rng, "pool auth requires backend TLS",
 			fmt.Sprintf("pool %q sets auth but backend_tls = \"none\"; backend credentials must never be sent in cleartext.", p.Name)))
+	}
+	if checkRng, plaintext := poolHasCleartextCheck(p); plaintext {
+		diags = append(diags, errDiag(checkRng, "pool auth requires TLS probes",
+			fmt.Sprintf("pool %q sets auth but a check resolves tls = \"none\"; probes carry the pool credentials, and a check { tls = \"none\" } override would hand them to whatever answers the cleartext EHLO.", p.Name)))
 	}
 	if auth.Username == "" || auth.Password == "" {
 		diags = append(diags, errDiag(rng, "pool auth without credentials",
@@ -309,6 +315,26 @@ func validatePoolAuth(p Pool) hcl.Diagnostics {
 			fmt.Sprintf("pool %q auth password contains a control character at byte %d.", p.Name, i)))
 	}
 	return diags
+}
+
+// poolHasCleartextCheck reports whether any resolved check TLS setting in
+// pool p — its own check{} block, or any server's — is "none", along with
+// that check's own range. TLS has no attr_range companion of its own (see
+// validateCheckContent), so the anchor is the check block's range
+// (cp.rng), falling back to the pool/server block when a check was never
+// decoded at all (fully defaulted, in which case TLS can only be "none"
+// via poolBackendTLS itself, already covered by the backend_tls check
+// above).
+func poolHasCleartextCheck(p Pool) (hcl.Range, bool) {
+	if p.Check.TLS == "none" {
+		return fallbackRange(p.Check.rng, p.rng), true
+	}
+	for _, s := range p.Servers {
+		if s.Check.TLS == "none" {
+			return fallbackRange(s.Check.rng, s.rng), true
+		}
+	}
+	return hcl.Range{}, false
 }
 
 // validatePools checks structural pool/server rules (duplicates, empty or

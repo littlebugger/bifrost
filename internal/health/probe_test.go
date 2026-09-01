@@ -320,13 +320,16 @@ func TestProbeHarvestsCapsAndSupersetVerdict(t *testing.T) {
 	}
 }
 
-// TestProbeAuthSuccess: with creds and a fake advertising AUTH PLAIN,
-// probe succeeds and the fake recorded the AUTH line.
+// TestProbeAuthSuccess: with creds, a TLS-upgraded connection (Dial
+// refuses AUTH over cleartext, see TestProbeAuthRefusesCleartext), and a
+// fake advertising AUTH PLAIN, probe succeeds and the fake recorded the
+// AUTH line.
 func TestProbeAuthSuccess(t *testing.T) {
 	caps := append(compliantCaps(), "AUTH PLAIN")
-	srv := fakesmtp.Start(t, fakesmtp.Script{Caps: caps})
+	srv := fakesmtp.Start(t, fakesmtp.Script{TLS: fakesmtp.TestCert(t), Caps: caps})
 
 	params := probeParams("ehlo")
+	params.TLS = "starttls"
 	params.AuthUsername = "user"
 	params.AuthPassword = "pass"
 	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
@@ -349,11 +352,13 @@ func TestProbeAuthSuccess(t *testing.T) {
 func TestProbeAuthPermanentFailure(t *testing.T) {
 	caps := append(compliantCaps(), "AUTH PLAIN")
 	srv := fakesmtp.Start(t, fakesmtp.Script{
+		TLS:    fakesmtp.TestCert(t),
 		Caps:   caps,
 		OnAUTH: []fakesmtp.Step{{Reply: "535 5.7.8 Authentication credentials invalid"}},
 	})
 
 	params := probeParams("ehlo")
+	params.TLS = "starttls"
 	params.AuthUsername = "user"
 	params.AuthPassword = "pass"
 	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
@@ -373,11 +378,13 @@ func TestProbeAuthPermanentFailure(t *testing.T) {
 func TestProbeAuthTransientFailure(t *testing.T) {
 	caps := append(compliantCaps(), "AUTH PLAIN")
 	srv := fakesmtp.Start(t, fakesmtp.Script{
+		TLS:    fakesmtp.TestCert(t),
 		Caps:   caps,
 		OnAUTH: []fakesmtp.Step{{Reply: "454 4.7.0 Temporary authentication failure"}},
 	})
 
 	params := probeParams("ehlo")
+	params.TLS = "starttls"
 	params.AuthUsername = "user"
 	params.AuthPassword = "pass"
 	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
@@ -386,6 +393,31 @@ func TestProbeAuthTransientFailure(t *testing.T) {
 	}
 	if res.incompatible {
 		t.Errorf("incompatible = true, want false (transient failure is just a failure)")
+	}
+}
+
+// TestProbeAuthRefusesCleartext is the health-layer half of the
+// cleartext-AUTH-probe fix: creds set but params.TLS = "none" must fail
+// the probe before a single AUTH byte reaches the fake, even though it
+// advertises AUTH PLAIN — mirrors backend.TestDialAuthRefusesCleartext,
+// which proves the same guard one layer down.
+func TestProbeAuthRefusesCleartext(t *testing.T) {
+	caps := append(compliantCaps(), "AUTH PLAIN")
+	srv := fakesmtp.Start(t, fakesmtp.Script{Caps: caps})
+
+	params := probeParams("ehlo")
+	params.TLS = "none"
+	params.AuthUsername = "user"
+	params.AuthPassword = "pass"
+	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
+	if res.ok {
+		t.Fatalf("ok = true, want false (creds set over an un-upgraded connection)")
+	}
+
+	sessions := waitForSessionCount(t, srv, 1)
+	verbs := transcriptVerbs(sessions[0])
+	if contains(verbs, "AUTH") {
+		t.Errorf("transcript verbs = %v, want no AUTH", verbs)
 	}
 }
 
