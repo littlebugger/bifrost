@@ -41,11 +41,11 @@ type Step struct {
 // Script configures one fake backend session. The zero value is a fully
 // usable "accept everything" script: default banner, no capabilities.
 //
-// OnEHLO, OnMAIL, OnRCPT, OnDATA, OnEOD, OnRSET, OnQUIT are per-verb step
-// queues: each call to that verb within a session consumes the next step;
+// OnEHLO, OnMAIL, OnRCPT, OnDATA, OnEOD, OnRSET, OnQUIT, OnAUTH are per-verb
+// step queues: each call to that verb within a session consumes the next step;
 // once exhausted, the last step repeats forever. An empty queue uses the
 // verb's built-in default reply (OnEHLO's default is the 250- capability
-// block built from Caps).
+// block built from Caps; OnAUTH's default is "235 2.7.0 OK").
 //
 // The fake never enforces SMTP's own command ordering (e.g. RCPT/DATA
 // before MAIL, or two MAILs in a row): each verb replies independently of
@@ -56,8 +56,8 @@ type Script struct {
 	Caps   []string    // EHLO 250- capability lines, e.g. "PIPELINING", "8BITMIME"
 	TLS    *tls.Config // nil => STARTTLS not advertised; see TestCert
 
-	OnEHLO                                        []Step
-	OnMAIL, OnRCPT, OnDATA, OnEOD, OnRSET, OnQUIT []Step
+	OnEHLO                                                []Step
+	OnMAIL, OnRCPT, OnDATA, OnEOD, OnRSET, OnQUIT, OnAUTH []Step
 
 	// MidBody runs in the *middle* of a DATA body, once MidBodyLines body
 	// lines have been read (default: after the first line): the steps are
@@ -288,6 +288,11 @@ func (srv *Server) handleConn(conn net.Conn, script Script, sess *sessionState) 
 			conn = tconn
 			r = bufio.NewReader(conn)
 			tlsActive = true
+		case "AUTH":
+			step := nextStep(script.OnAUTH, &cur.auth)
+			if !writeStep(srv, conn, step, "235 2.7.0 OK") {
+				return
+			}
 		case "MAIL":
 			sess.startMail(args)
 			step := nextStep(script.OnMAIL, &cur.mail)

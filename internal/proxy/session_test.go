@@ -315,6 +315,19 @@ func TestAuthAndBdatRejected(t *testing.T) {
 	c.expect("250 2.0.0 OK")
 }
 
+// TestSessionAuthNotConfigured502 pins decision D6's behavior for a
+// listener with no auth{} block: AUTH stays exactly what it was before
+// this feature (502), regardless of session state.
+func TestSessionAuthNotConfigured502(t *testing.T) {
+	c := newTestClient(t, testConfig(), nil, &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+	c.send("EHLO client.example")
+	c.reply()
+
+	c.send("AUTH PLAIN x")
+	c.expect("502 5.5.1 Command not implemented")
+}
+
 func TestMailReachesHandler(t *testing.T) {
 	h := &stubHandler{}
 	c := newTCPTestClient(t, testConfig(), nil, h)

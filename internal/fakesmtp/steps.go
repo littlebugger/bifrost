@@ -20,7 +20,7 @@ const (
 // stepCursors tracks, per session, how many steps have been consumed from
 // each verb's queue so far.
 type stepCursors struct {
-	ehlo, mail, rcpt, data, eod, rset, quit int
+	ehlo, mail, rcpt, data, eod, rset, quit, auth int
 }
 
 // nextStep returns the step this call to a per-verb queue should use,

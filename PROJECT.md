@@ -16,7 +16,7 @@ Prior research (`smtp-balancer-options.md`) verified that no open-source project
 - **Not an MTA.** No queue, no retries, no bounces, no DKIM, no content filtering. If the backend says 451, the *client* owns the retry — that is the point of R4.
 - **Not a policy engine.** Rules select backends; acceptance/rejection verdicts come from backends.
 - **No CHUNKING/BDAT in v1.** Not advertised, so compliant clients never send it (`BDAT` anyway → 502). Three protocol reasons documented in the contract research; Exim's cutthrough made the same call.
-- **No AUTH in v1.** Per-transaction backend binding makes relayed AUTH incoherent (auth is connection-scoped; the session spans many backends). `AUTH` → 502. Target deployment is a trusted internal segment. Local AUTH termination is a possible post-v1 feature.
+- **No AUTH passthrough.** Per-transaction backend binding still makes *relayed* AUTH incoherent (auth is connection-scoped; a session spans many backends) — that has not changed. What has: bifrost locally terminates SMTP AUTH PLAIN on each leg, independently, and either can be configured without the other. Client leg: PLAIN credentials are verified against the listener's own salted-SHA256 user store, advertised only once STARTTLS is up, and — unlike STARTTLS itself — configuring `auth` makes it *required* (no plaintext-auth escape hatch; unauthenticated `MAIL` gets 530 until AUTH succeeds; three failed attempts close the connection). Backend leg: bifrost originates its own `AUTH PLAIN` to every server in a pool using that pool's plaintext credentials, whether or not client-leg auth is configured. Mechanisms other than PLAIN (LOGIN, CRAM-MD5, XOAUTH2), per-user routing beyond the relay gate, and propagating the client's own identity to the backend remain out of scope — bifrost always authenticates to the backend as itself, and a client's `AUTH=` MAIL parameter still relays verbatim (the backend stays the enforcer).
 - **No Received: header insertion in v1.** RFC 5321 expects relays to add one; we deliberately deviate to preserve byte transparency (the balancer behaves as a middlebox, not an MTA). Documented deviation; optional prepend-only insertion is a possible post-v1 feature.
 
 ## Requirements Analysis
@@ -66,7 +66,9 @@ Adopted from Mireka/Baton: per-transaction backend attachment, real-time step-by
 | `EHLO` while a backend is attached | backend aborted, **Synth** fresh `250-` capability reply, latch cleared | RFC 5321 4.1.4: EHLO acts as RSET |
 | Session lifetime exceeded (1 h default) | **Synth** `421 4.4.2` + close | anti-slow-loris backstop |
 | `RCPT`/`DATA` before `MAIL` | **Synth** `503` | |
-| `AUTH` / `BDAT` | **Synth** `502` | not advertised, not supported v1 |
+| `BDAT` | **Synth** `502` | not advertised, not supported v1 |
+| `AUTH` when `listener.auth` is not configured | **Synth** `502` | unchanged v1 behavior — no client-leg credential store to check against |
+| `AUTH` when `listener.auth` is configured | **Synth** — closed nine-reply AUTH sub-table below | connection-scoped by RFC 4954; never a backend reply to relay |
 | `MAIL FROM` | **Relay** — backend attached now; its actual verdict | second MAIL mid-txn: relayed; backend's 503/2yz drives state |
 | `RCPT TO` (each) | **Relay** | |
 | `DATA` go-ahead | **Relay** backend's `354` or error — **never synthesize 354** | predecessors' shared bug |
@@ -86,7 +88,25 @@ Adopted from Mireka/Baton: per-transaction backend attachment, real-time step-by
 
 **421 vs 451 rule:** `451 4.4.x/4.3.2` for transaction-scoped failures (session stays open, client may retry on the same connection); `421` only for connection-scoped events (overload at accept, idle/stall, drain) and always followed by close. Never `554` for backend failure — permanent codes would bounce mail a healthy backend would take.
 
+**AUTH sub-table (normative, only reachable once `listener.auth` is configured; closed enum, `Rpl*` constants in `internal/proxy/replies.go`):**
+
+| Trigger | Reply |
+|---|---|
+| Credentials verified | `235 2.7.0 Authentication succeeded` |
+| `AUTH PLAIN` sent with no initial response | `334 ` then one continuation line is read |
+| Continuation line is `*` | `501 5.0.0 Authentication cancelled` |
+| Malformed base64, or the decoded PLAIN response has other than exactly two NULs | `501 5.5.2 Invalid authentication response` |
+| Mechanism other than PLAIN (case-insensitive) | `504 5.5.4 Unrecognized authentication type` |
+| `MAIL` before a successful `AUTH` | `530 5.7.0 Authentication required` |
+| Unknown user or wrong password | `535 5.7.8 Authentication credentials invalid` |
+| `AUTH` attempted on a plaintext (pre-STARTTLS) session | `538 5.7.11 Encryption required for requested authentication mechanism` |
+| 3rd failed attempt in the session | `421 4.7.0 Too many failed authentication attempts, closing connection` + close |
+
+`AUTH` before greeting, or a second `AUTH` once already authenticated, reuse the existing `503` row above rather than adding a tenth reply. Verification is `sha256(salt || password)` compared with `crypto/subtle.ConstantTimeCompare`; an unknown username still runs the same hash+compare against a dummy entry so valid names aren't distinguishable by timing.
+
 **EHLO capability policy:** the advertised set is **statically configured** with safe defaults (`PIPELINING`, `8BITMIME`, `SIZE <configured>`, `STARTTLS` iff cert configured; operators may add `SMTPUTF8`, `DSN`, `ENHANCEDSTATUSCODES`). Enforcement is delegated: the health checker's EHLO probe marks any backend whose capability set is **not a superset** of the advertised set as *incompatible* and removes it from rotation, with two carve-outs: (1) **`STARTTLS` is excluded from the superset comparison** — it is client-leg-terminated; backend TLS is governed solely by the pool's `backend_tls` mode; (2) **`SIZE` compares numerically, and an absent `SIZE`, a bare `SIZE`, or `SIZE 0` all mean unlimited (RFC 1870) and satisfy any advertised value** — backends that never advertise SIZE (e.g. KumoMTA) stay in rotation. MAIL/RCPT parameters always relay verbatim — the backend is the enforcer. `SMTPUTF8` requires `8BITMIME` (RFC 6531) — config validation enforces the pairing. **v1 supports exactly one listener** (config-validated), so "the advertised set" has a single referent for the health verdict. Computed live intersection and multi-listener are possible post-v1 modes.
+
+A pool with `auth` configured adds one more implicit backend requirement, independent of the listener's own advertised capability set: the backend's post-TLS `EHLO` must include `AUTH PLAIN` (space-split, case-insensitive match against its `AUTH` capability value) or every dial for that pool fails as `incompatible`. `AUTH` itself never appears in `listener.capabilities` — client-leg auth is bifrost-local and is never something a backend must superset; the backend-leg requirement is driven solely by whether that pool's own `auth` block is set.
 
 ## Architecture
 
@@ -148,7 +168,7 @@ The RFC 5321 §4.5.3.2 values are **floors** (client-side minimum waits), not ce
 | D3 | **Backend attach at MAIL FROM** | Earliest moment full verbatim relay is possible (MAIL verdict is real). Mireka's first-RCPT laziness exists for spam economics that don't apply to trusted clients. |
 | D4 | **Fresh backend connection per transaction (v1)** | Haraka removed pooling wholesale after years of bugs (#2788 key leaks, RSET-reuse races). Pooling is post-v1 epic 12 with four named hazards pre-specified. Cost: one TCP+EHLO(+TLS) per message + backend conn-rate pressure (documented; `max_transactions` caps it). |
 | D5 | **One backend per message** | Protocol-forced (Baton's fan-out silently lost mail). |
-| D6 | **No CHUNKING, no AUTH, no Received insertion (v1)** | Each removes a failure class; all documented deviations/deferrals. |
+| D6 | **No CHUNKING, no AUTH passthrough, no Received insertion (v1); local AUTH termination added** | Each removes a failure class; all documented deviations/deferrals. Local AUTH termination (client-leg PLAIN verify, backend-leg PLAIN originate) doesn't reopen the incoherence CHUNKING/Received avoid: both halves are connection/pool-scoped, never a per-transaction relay of the client's own credentials. |
 | D7 | **Streaming-only, bounded buffers** | 1 GB message under 64 MB heap, enforced by test. |
 | D8 | **Closed synthesized-reply enum** (`replies.go`) + contract tests | R4 audit surface: everything not in the enum is provably verbatim. |
 | D9 | **PIPELINING advertised in v1** | Core to R3 value (bulk senders pipeline). Mechanics fully specified: bounded 32-line/16 KB pre-attach queue, verbatim replay, in-order replies, overflow `421 4.7.0`; read-ahead drained forward at DATA. |

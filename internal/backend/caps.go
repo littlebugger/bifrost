@@ -16,6 +16,18 @@ func (c CapSet) Has(name string) bool {
 	return ok
 }
 
+// HasAuthPlain reports whether the backend's AUTH line lists PLAIN among
+// its space-separated mechanisms, case-insensitively (e.g. "AUTH LOGIN
+// PLAIN"). A missing AUTH capability entirely counts as false.
+func (c CapSet) HasAuthPlain() bool {
+	for _, mech := range strings.Fields(c["AUTH"]) {
+		if strings.EqualFold(mech, "PLAIN") {
+			return true
+		}
+	}
+	return false
+}
+
 // Size reports the backend's advertised SIZE limit in bytes and whether
 // it is bounded. A missing SIZE capability, a bare "SIZE" line, or "SIZE
 // 0" all mean unlimited (RFC 1870): bounded is false in every one of

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,4 +318,88 @@ func TestProbeHarvestsCapsAndSupersetVerdict(t *testing.T) {
 	if !res.incompatible {
 		t.Errorf("incompatible = false, want true (8BITMIME missing)")
 	}
+}
+
+// TestProbeAuthSuccess: with creds and a fake advertising AUTH PLAIN,
+// probe succeeds and the fake recorded the AUTH line.
+func TestProbeAuthSuccess(t *testing.T) {
+	caps := append(compliantCaps(), "AUTH PLAIN")
+	srv := fakesmtp.Start(t, fakesmtp.Script{Caps: caps})
+
+	params := probeParams("ehlo")
+	params.AuthUsername = "user"
+	params.AuthPassword = "pass"
+	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
+	if !res.ok {
+		t.Fatalf("ok = false, want true (reason=%q)", res.reason)
+	}
+	if res.incompatible {
+		t.Errorf("incompatible = true, want false")
+	}
+
+	sessions := waitForSessionCount(t, srv, 1)
+	verbs := transcriptVerbs(sessions[0])
+	if !contains(verbs, "AUTH") {
+		t.Errorf("transcript verbs = %v, want AUTH present", verbs)
+	}
+}
+
+// TestProbeAuthPermanentFailure: fake replies 535 (permanent auth failure),
+// probe marks server incompatible with ok=true and reason containing "auth".
+func TestProbeAuthPermanentFailure(t *testing.T) {
+	caps := append(compliantCaps(), "AUTH PLAIN")
+	srv := fakesmtp.Start(t, fakesmtp.Script{
+		Caps:   caps,
+		OnAUTH: []fakesmtp.Step{{Reply: "535 5.7.8 Authentication credentials invalid"}},
+	})
+
+	params := probeParams("ehlo")
+	params.AuthUsername = "user"
+	params.AuthPassword = "pass"
+	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
+	if !res.ok {
+		t.Fatalf("ok = false, want true (permanent auth failure is incompatible, not failure; reason=%q)", res.reason)
+	}
+	if !res.incompatible {
+		t.Errorf("incompatible = false, want true (permanent auth failure)")
+	}
+	if !containsSubstring(res.reason, "auth") {
+		t.Errorf("reason = %q, want to contain 'auth'", res.reason)
+	}
+}
+
+// TestProbeAuthTransientFailure: fake replies 454 (transient auth failure),
+// probe fails with !ok (plain failure, no incompatible verdict).
+func TestProbeAuthTransientFailure(t *testing.T) {
+	caps := append(compliantCaps(), "AUTH PLAIN")
+	srv := fakesmtp.Start(t, fakesmtp.Script{
+		Caps:   caps,
+		OnAUTH: []fakesmtp.Step{{Reply: "454 4.7.0 Temporary authentication failure"}},
+	})
+
+	params := probeParams("ehlo")
+	params.AuthUsername = "user"
+	params.AuthPassword = "pass"
+	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
+	if res.ok {
+		t.Fatalf("ok = true, want false (transient auth failure)")
+	}
+	if res.incompatible {
+		t.Errorf("incompatible = true, want false (transient failure is just a failure)")
+	}
+}
+
+// contains reports whether needle appears in haystack.
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// containsSubstring reports whether substring appears in s.
+func containsSubstring(s, substring string) bool {
+	return strings.Contains(s, substring)
 }

@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,22 @@ import (
 	"github.com/littlebugger/bifrost/internal/config"
 	"github.com/littlebugger/bifrost/internal/fakesmtp"
 )
+
+// authTestConfig is tlsTestConfig plus a listener AUTH block with one
+// user, rttskr-team/pw — the credential the AUTH scenarios exercise.
+func authTestConfig() *config.Config {
+	cfg := tlsTestConfig()
+	cfg.Listener.Auth = &config.ListenerAuth{
+		Users: []config.AuthUser{testAuthUser("rttskr-team", "s1", "pw")},
+	}
+	return cfg
+}
+
+// authPlainPayload base64-encodes an RFC 4616 PLAIN response with an
+// empty authzid.
+func authPlainPayload(authcid, password string) string {
+	return base64.StdEncoding.EncodeToString([]byte("\x00" + authcid + "\x00" + password))
+}
 
 // tlsTestConfig is testConfig plus the advertised STARTTLS capability.
 // Listener.StartTLS (the cert *paths*) stays nil on purpose: the session
@@ -188,5 +206,160 @@ func TestStartTLSPipelinedPlaintext421(t *testing.T) {
 	c.raw("STARTTLS\r\nEHLO injected.example\r\n")
 
 	c.expect("421 4.7.0 Pipelined data after STARTTLS, closing connection")
+	c.expectClosed()
+}
+
+// TestSessionAuthRequiresTLS538 covers scenario 2: a certificate is
+// configured (so STARTTLS is advertised) but the client never upgrades.
+// AUTH stays unadvertised and PLAIN is refused outright — RFC 4954 PLAIN
+// never runs in cleartext, no matter what the client asks for.
+func TestSessionAuthRequiresTLS538(t *testing.T) {
+	c := newTestClient(t, authTestConfig(), fakesmtp.TestCert(t), &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+
+	c.send("EHLO client.example")
+	c.expect("250-bifrost.test", "250-PIPELINING", "250-8BITMIME", "250-SIZE 10485760", "250 STARTTLS")
+
+	c.send("AUTH PLAIN " + authPlainPayload("rttskr-team", "pw"))
+	c.expect("538 5.7.11 Encryption required for requested authentication mechanism")
+}
+
+// TestSessionAuthFullFlowAfterSTARTTLS covers scenario 3 (the whole
+// post-STARTTLS lifecycle) and scenario 6 (authed survives the EHLO
+// reset): EHLO advertises AUTH PLAIN once TLS is up, MAIL is gated until
+// authenticated, a successful AUTH stops advertising AUTH PLAIN and
+// blocks a second AUTH, and a fresh EHLO does not undo any of it.
+func TestSessionAuthFullFlowAfterSTARTTLS(t *testing.T) {
+	certCfg := fakesmtp.TestCert(t)
+	h := &stubHandler{}
+	c := newTestClient(t, authTestConfig(), certCfg, h)
+	c.expect("220 bifrost.test ESMTP")
+
+	c.send("EHLO client.example")
+	c.reply() // pre-TLS advertisement is covered by TestSessionAuthRequiresTLS538
+
+	c.send("STARTTLS")
+	c.expect("220 2.0.0 Ready to start TLS")
+	c.upgrade(certCfg)
+
+	c.send("EHLO client.example")
+	c.expect("250-bifrost.test", "250-PIPELINING", "250-8BITMIME", "250-SIZE 10485760", "250 AUTH PLAIN")
+
+	c.send("MAIL FROM:<a@b>")
+	c.expect("530 5.7.0 Authentication required")
+
+	c.send("AUTH PLAIN " + authPlainPayload("rttskr-team", "pw"))
+	c.expect("235 2.7.0 Authentication succeeded")
+
+	// A fresh EHLO resets greeting state but not authed (RFC 4954: no
+	// TLS downgrade path, so no reason to make the client re-auth).
+	c.send("EHLO client.example")
+	c.expect("250-bifrost.test", "250-PIPELINING", "250-8BITMIME", "250 SIZE 10485760")
+
+	c.send("AUTH PLAIN " + authPlainPayload("rttskr-team", "pw"))
+	c.expect("503 5.5.1 Bad sequence of commands")
+
+	c.send("MAIL FROM:<a@b>")
+	c.expect("451 4.4.1 No backend available, try again later")
+	if got := h.seen(); len(got) != 1 {
+		t.Fatalf("handler saw %d transactions, want 1", len(got))
+	}
+}
+
+// TestSessionAuthContinuationAndCancel covers scenario 4: the 334
+// continuation round-trip, and "*" cancelling it.
+func TestSessionAuthContinuationAndCancel(t *testing.T) {
+	certCfg := fakesmtp.TestCert(t)
+	c := newTestClient(t, authTestConfig(), certCfg, &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+	c.send("EHLO client.example")
+	c.reply()
+	c.send("STARTTLS")
+	c.expect("220 2.0.0 Ready to start TLS")
+	c.upgrade(certCfg)
+	c.send("EHLO client.example")
+	c.reply()
+
+	// Cancel: "*" on the continuation line aborts, no payload parsed.
+	c.send("AUTH PLAIN")
+	c.expect("334 ")
+	c.send("*")
+	c.expect("501 5.0.0 Authentication cancelled")
+
+	// Still unauthenticated and in sequence: a fresh continuation with a
+	// real payload succeeds.
+	c.send("AUTH PLAIN")
+	c.expect("334 ")
+	c.send(authPlainPayload("rttskr-team", "pw"))
+	c.expect("235 2.7.0 Authentication succeeded")
+}
+
+// TestSessionAuthMechanismAndLockout covers scenario 5: an unsupported
+// mechanism, a malformed payload, and three wrong passwords in a row.
+func TestSessionAuthMechanismAndLockout(t *testing.T) {
+	certCfg := fakesmtp.TestCert(t)
+	c := newTestClient(t, authTestConfig(), certCfg, &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+	c.send("EHLO client.example")
+	c.reply()
+	c.send("STARTTLS")
+	c.expect("220 2.0.0 Ready to start TLS")
+	c.upgrade(certCfg)
+	c.send("EHLO client.example")
+	c.reply()
+
+	c.send("AUTH LOGIN")
+	c.expect("504 5.5.4 Unrecognized authentication type")
+
+	c.send("AUTH PLAIN !!!invalid-base64!!!")
+	c.expect("501 5.5.2 Invalid authentication response")
+
+	wrong := authPlainPayload("rttskr-team", "wrongpw")
+	c.send("AUTH PLAIN " + wrong)
+	c.expect("535 5.7.8 Authentication credentials invalid")
+	c.send("AUTH PLAIN " + wrong)
+	c.expect("535 5.7.8 Authentication credentials invalid")
+	c.send("AUTH PLAIN " + wrong)
+	c.expect("421 4.7.0 Too many failed authentication attempts, closing connection")
+	c.expectClosed()
+}
+
+// TestSessionAuthContinuationWakesOnDrain covers the drain contract for
+// the AUTH continuation read: a client parked at "334 " (sent AUTH PLAIN
+// with no initial response, and never sends a payload) must be unblocked
+// promptly when the session's context is cancelled — the same wakeup an
+// ordinary between-commands read gets (readCommand's wakeOnCancel) — not
+// left waiting on the session's own idle timer.
+//
+// No client-idle timeout is configured here at all (authTestConfig builds
+// on testConfig, which leaves Timeouts zero), so the continuation read
+// would otherwise block forever: only ctx cancellation can unblock it.
+// That makes this test fail closed (it hangs until the harness's 5s
+// wait() timeout) if the continuation read ever regresses to a bare
+// armDeadline+ReadCommandLine again.
+func TestSessionAuthContinuationWakesOnDrain(t *testing.T) {
+	certCfg := fakesmtp.TestCert(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := newTestClientCtx(ctx, t, authTestConfig(), certCfg, &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+	c.send("EHLO client.example")
+	c.reply()
+	c.send("STARTTLS")
+	c.expect("220 2.0.0 Ready to start TLS")
+	c.upgrade(certCfg)
+	c.send("EHLO client.example")
+	c.reply()
+
+	c.send("AUTH PLAIN")
+	c.expect("334 ")
+
+	cancel()
+
+	// The read error is a plain deadline-exceeded (no drain-specific
+	// wording): authReadError defers anything other than bare-LF/
+	// over-long to the session's own handleReadError, unchanged.
+	c.expect("421 4.4.2 Idle timeout, closing connection")
 	c.expectClosed()
 }

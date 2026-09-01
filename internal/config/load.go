@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -81,6 +82,25 @@ func resolveBackendCAs(cfg *Config) hcl.Diagnostics {
 			pool.Servers[j].Check.CAPool = certPool
 		}
 	}
+
+	// resolvePoolAuth copies every pool's backend-leg SMTP AUTH credentials
+	// into that pool's health check parameters, the same way resolveBackendCAs
+	// copies the TLS CA pool. Both the relay path (internal/proxy) and the
+	// health prober (internal/health) need the same credentials, and
+	// CheckParams is all internal/health ever sees of a pool.
+	for i := range cfg.Pools {
+		pool := &cfg.Pools[i]
+		if pool.Auth == nil {
+			continue
+		}
+		pool.Check.AuthUsername = pool.Auth.Username
+		pool.Check.AuthPassword = pool.Auth.Password
+		for j := range pool.Servers {
+			pool.Servers[j].Check.AuthUsername = pool.Auth.Username
+			pool.Servers[j].Check.AuthPassword = pool.Auth.Password
+		}
+	}
+
 	return diags
 }
 
@@ -251,7 +271,26 @@ func (r *rawListener) convert() (Listener, hcl.Diagnostics) {
 			rng:        r.StartTLS.Range,
 		}
 	}
+	if r.Auth != nil {
+		l.Auth = r.Auth.convert()
+	}
 	return l, nil
+}
+
+// convert maps a decoded listener auth block to its resolved form,
+// lowercasing HashedPassword so every later comparison is a plain byte
+// match against a fixed-case hex string.
+func (r *rawListenerAuth) convert() *ListenerAuth {
+	la := &ListenerAuth{rng: r.Range}
+	for _, u := range r.Users {
+		la.Users = append(la.Users, AuthUser{
+			Name:           u.Name,
+			Salt:           u.Salt,
+			HashedPassword: strings.ToLower(u.HashedPassword),
+			rng:            u.Range,
+		})
+	}
+	return la
 }
 
 func (r *rawServer) convert() (Server, hcl.Diagnostics) {
@@ -294,6 +333,9 @@ func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 		s, sd := rs.convert()
 		diags = append(diags, sd...)
 		p.Servers = append(p.Servers, s)
+	}
+	if r.Auth != nil {
+		p.Auth = &PoolAuth{Username: r.Auth.Username, Password: r.Auth.Password, rng: r.Auth.Range}
 	}
 	return p, diags
 }

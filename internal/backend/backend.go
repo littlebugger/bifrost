@@ -53,6 +53,14 @@ type Opts struct {
 	TLSConfig    *tls.Config
 	RequiredCaps []string
 	Timeouts     config.Timeouts
+
+	// AuthUsername/AuthPassword, when either is non-empty, make Dial
+	// originate AUTH PLAIN against the backend after the superset check:
+	// the pool's own credentials, not the client's (this is a fresh,
+	// balancer-owned exchange with the backend, not a splice of anything
+	// the client sent).
+	AuthUsername string
+	AuthPassword string
 }
 
 // Conn is one balancer->backend connection, past the handshake.
@@ -139,6 +147,17 @@ func Dial(ctx context.Context, srv *config.Server, opts Opts) (*Conn, error) {
 	if err := checkSuperset(c.caps, opts.RequiredCaps); err != nil {
 		_ = c.conn.Close()
 		return nil, err
+	}
+
+	if opts.AuthUsername != "" || opts.AuthPassword != "" {
+		if !c.caps.HasAuthPlain() {
+			_ = c.conn.Close()
+			return nil, &IncompatibleError{Missing: []string{"AUTH PLAIN"}}
+		}
+		if err := c.authenticate(opts.AuthUsername, opts.AuthPassword); err != nil {
+			_ = c.conn.Close()
+			return nil, err
+		}
 	}
 
 	return c, nil

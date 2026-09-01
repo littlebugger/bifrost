@@ -36,6 +36,7 @@ func (c *Config) Validate() hcl.Diagnostics {
 	diags = append(diags, c.validateListenerCount()...)
 	diags = append(diags, c.validateListenerContent()...)
 	diags = append(diags, c.validateStartTLSFiles()...)
+	diags = append(diags, c.validateListenerAuth()...)
 	diags = append(diags, c.validatePools()...)
 	diags = append(diags, c.validateRouting()...)
 	diags = append(diags, c.validateAdmin()...)
@@ -215,6 +216,101 @@ func (c *Config) validateStartTLSFiles() hcl.Diagnostics {
 	return diags
 }
 
+// validateListenerAuth checks the listener's client-leg SMTP AUTH block.
+// A non-nil Listener.Auth is a guarantee the rest of the codebase relies
+// on: STARTTLS must be configured (credentials must never cross the wire
+// before TLS), at least one user must exist, user names must be unique,
+// every user needs a salt, and hashed_password must be a usable
+// SHA-256 hex digest. Reuses controlCharIndex (already used for
+// hostname/capability injection) so no credential field can smuggle a
+// NUL or CRLF into whatever later reads it verbatim.
+func (c *Config) validateListenerAuth() hcl.Diagnostics {
+	auth := c.Listener.Auth
+	if auth == nil {
+		return nil
+	}
+	var diags hcl.Diagnostics
+	if c.Listener.StartTLS == nil {
+		diags = append(diags, errDiag(fallbackRange(auth.rng, c.Listener.rng),
+			"client auth requires starttls",
+			"listener.auth is configured but the listener has no starttls block; client credentials must never be sent before TLS."))
+	}
+	if len(auth.Users) == 0 {
+		diags = append(diags, errDiag(auth.rng, "auth block without users",
+			"listener.auth has no user blocks; add at least one or remove the auth block."))
+	}
+
+	seen := map[string]bool{}
+	for _, u := range auth.Users {
+		if seen[u.Name] {
+			diags = append(diags, errDiag(u.rng, "duplicate auth user", fmt.Sprintf("user %q is already defined.", u.Name)))
+		}
+		seen[u.Name] = true
+
+		if u.Salt == "" {
+			diags = append(diags, errDiag(u.rng, "auth user without a salt", fmt.Sprintf("user %q has an empty salt.", u.Name)))
+		}
+		if !validHexHash(u.HashedPassword) {
+			diags = append(diags, errDiag(u.rng, "malformed hashed_password",
+				fmt.Sprintf("user %q hashed_password must be 64 lowercase hex characters (SHA-256), got %d.", u.Name, len(u.HashedPassword))))
+		}
+		if i := controlCharIndex(u.Name); i >= 0 {
+			diags = append(diags, errDiag(u.rng, "Control character in auth credential",
+				fmt.Sprintf("user name %q contains a control character at byte %d.", u.Name, i)))
+		}
+		if i := controlCharIndex(u.Salt); i >= 0 {
+			diags = append(diags, errDiag(u.rng, "Control character in auth credential",
+				fmt.Sprintf("salt for user %q contains a control character at byte %d.", u.Name, i)))
+		}
+	}
+	return diags
+}
+
+// validHexHash reports whether h is a 64-character lowercase hex string
+// (a SHA-256 digest). HashedPassword is already lowercased at load
+// (load.go's rawListenerAuth.convert), so this never needs to case-fold.
+func validHexHash(h string) bool {
+	if len(h) != 64 {
+		return false
+	}
+	for _, r := range h {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// validatePoolAuth checks a pool's backend-leg SMTP AUTH block: it must
+// only be used over an encrypted backend leg, and both credentials must
+// be present. Reuses controlCharIndex for the same injection reason as
+// validateListenerAuth.
+func validatePoolAuth(p Pool) hcl.Diagnostics {
+	auth := p.Auth
+	if auth == nil {
+		return nil
+	}
+	var diags hcl.Diagnostics
+	rng := fallbackRange(auth.rng, p.rng)
+	if p.BackendTLS == "none" {
+		diags = append(diags, errDiag(rng, "pool auth requires backend TLS",
+			fmt.Sprintf("pool %q sets auth but backend_tls = \"none\"; backend credentials must never be sent in cleartext.", p.Name)))
+	}
+	if auth.Username == "" || auth.Password == "" {
+		diags = append(diags, errDiag(rng, "pool auth without credentials",
+			fmt.Sprintf("pool %q auth block is missing username or password.", p.Name)))
+	}
+	if i := controlCharIndex(auth.Username); i >= 0 {
+		diags = append(diags, errDiag(rng, "Control character in auth credential",
+			fmt.Sprintf("pool %q auth username contains a control character at byte %d.", p.Name, i)))
+	}
+	if i := controlCharIndex(auth.Password); i >= 0 {
+		diags = append(diags, errDiag(rng, "Control character in auth credential",
+			fmt.Sprintf("pool %q auth password contains a control character at byte %d.", p.Name, i)))
+	}
+	return diags
+}
+
 // validatePools checks structural pool/server rules (duplicates, empty or
 // all-backup pools, weight range, backend TLS) and each server's check
 // content.
@@ -229,6 +325,7 @@ func (c *Config) validatePools() hcl.Diagnostics {
 
 		diags = append(diags, validatePoolShape(p)...)
 		diags = append(diags, validatePoolBackendTLS(p)...)
+		diags = append(diags, validatePoolAuth(p)...)
 		diags = append(diags, negativeMaxTxn(p.MaxTransactions, p.maxTxnRange, "pool")...)
 
 		seenServer := map[string]bool{}

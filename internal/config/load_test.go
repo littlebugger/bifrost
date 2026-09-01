@@ -38,6 +38,20 @@ func serverNamed(servers []Server, name string) *Server {
 	return nil
 }
 
+// mustLoad loads path and fails the test if it decodes with any error
+// diagnostic (warnings, e.g. the missing-admin-block warning, are fine).
+func mustLoad(t *testing.T, path string) *Config {
+	t.Helper()
+	cfg, diags := Load(path)
+	if diags.HasErrors() {
+		t.Fatalf("Load(%s) diags = %v", path, diags)
+	}
+	if cfg == nil {
+		t.Fatalf("Load(%s) returned nil Config with no error diags", path)
+	}
+	return cfg
+}
+
 func TestLoadExample(t *testing.T) {
 	cfg, diags := Load("../../examples/bifrost.hcl")
 	if diags.HasErrors() {
@@ -167,6 +181,24 @@ func TestLoadExample(t *testing.T) {
 	}
 	if cfg.Admin.Bind != "127.0.0.1:8081" || cfg.Admin.AllowRemote {
 		t.Errorf("Admin = %+v, want bind=127.0.0.1:8081 allow_remote=false", cfg.Admin)
+	}
+}
+
+func TestLoadAuth(t *testing.T) {
+	cfg := mustLoad(t, "testdata/auth.hcl")
+	la := cfg.Listener.Auth
+	if la == nil || len(la.Users) != 1 {
+		t.Fatalf("Listener.Auth = %+v, want 1 user", la)
+	}
+	u := la.Users[0]
+	if u.Name != "rttskr-team" || u.Salt != "aa11" ||
+		u.HashedPassword != strings.ToLower("ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"[:64]) {
+		t.Errorf("user = %+v (hash must be lowercased at load)", u)
+	}
+	outgoing := poolNamed(cfg.Pools, "outgoing")
+	if outgoing == nil || outgoing.Auth == nil ||
+		outgoing.Auth.Username != "rttskr-team" || outgoing.Auth.Password != "pa55w0rd" {
+		t.Fatalf("pool auth = %+v", outgoing)
 	}
 }
 

@@ -55,6 +55,21 @@ listener {
   }
 
   capabilities = ["PIPELINING", "8BITMIME", "SIZE 10485760", "STARTTLS"]
+
+  # Client-leg SMTP AUTH (PLAIN only), disabled here. Requires the
+  # starttls block above -- AUTH PLAIN is advertised only post-STARTTLS,
+  # and configuring auth makes it required (MAIL gets 530 until a
+  # client authenticates). Mint hashed_password with:
+  #   hashed_password = hex(sha256(salt || password))
+  # (dev env: `make kumo-credential` mints a salt/hashed_password pair
+  # in this same kumo inbound_auth.toml-compatible format). Uncomment to
+  # enable:
+  # auth {
+  #   user "rttskr-team" {
+  #     salt            = "1af90c3e2b7ad4f1"
+  #     hashed_password = "d989c9f1e4a0b3c7f5e2d1a6b8c4f0e3d7a9c2b5f8e1d4a7c0b3f6e9d2a5c8b1"
+  #   }
+  # }
 }
 
 # "internal": smooth-weighted round robin, plain-TCP probe on an
@@ -100,6 +115,16 @@ pool "bulk" {
     address = "198.51.100.21:25"
     weight  = 1
   }
+
+  # Backend-leg SMTP AUTH, disabled here. Requires backend_tls != "none"
+  # (already set above) -- bifrost sends this password as PLAIN, in the
+  # clear, only over that encrypted leg. Unlike the listener's hash,
+  # this is the real plaintext credential the backend expects. Uncomment
+  # to enable:
+  # auth {
+  #   username = "rttskr-team"
+  #   password = "pa55w0rd"
+  # }
 }
 
 routing {

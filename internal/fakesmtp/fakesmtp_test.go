@@ -231,3 +231,55 @@ func TestNon3yzDataLeavesNextCommandReadable(t *testing.T) {
 		t.Errorf("RSET count = %d, want 1: the command was read as body", got)
 	}
 }
+
+func TestOnAUTHDefault(t *testing.T) {
+	srv := Start(t, Script{
+		Caps: []string{"AUTH PLAIN"},
+	})
+	conn, r := dialRaw(t, srv.Addr())
+
+	readReplyLines(t, r) // banner
+	_, _ = conn.Write([]byte("EHLO client.example\r\n"))
+	readReplyLines(t, r)
+
+	_, _ = conn.Write([]byte("AUTH PLAIN dGVzdA==\r\n"))
+	got := readReplyLines(t, r)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "235") {
+		t.Fatalf("AUTH reply = %v, want 235 OK", got)
+	}
+
+	// Verify AUTH command was recorded in transcript
+	sess := srv.Sessions()[0]
+	transcript := sess.Transcript()
+	authFound := false
+	for _, ev := range transcript {
+		if ev.Verb == "AUTH" {
+			authFound = true
+			if !strings.Contains(string(ev.Line), "AUTH PLAIN dGVzdA==") {
+				t.Errorf("AUTH line recorded = %q, want to contain AUTH PLAIN dGVzdA==", string(ev.Line))
+			}
+			break
+		}
+	}
+	if !authFound {
+		t.Fatalf("AUTH command not found in transcript")
+	}
+}
+
+func TestOnAUTHScripted(t *testing.T) {
+	srv := Start(t, Script{
+		Caps:   []string{"AUTH PLAIN"},
+		OnAUTH: []Step{{Reply: "535 5.7.8 nope"}},
+	})
+	conn, r := dialRaw(t, srv.Addr())
+
+	readReplyLines(t, r) // banner
+	_, _ = conn.Write([]byte("EHLO client.example\r\n"))
+	readReplyLines(t, r)
+
+	_, _ = conn.Write([]byte("AUTH PLAIN dGVzdA==\r\n"))
+	got := readReplyLines(t, r)
+	if len(got) != 1 || got[0] != "535 5.7.8 nope" {
+		t.Fatalf("AUTH reply = %v, want scripted 535", got)
+	}
+}

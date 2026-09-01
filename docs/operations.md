@@ -419,6 +419,125 @@ and used by both the relay's dialer and the health checker's probe
 `test/integration/binary_test.go`). An unreadable or certificate-free CA
 file is a load error, so `-c` catches it before a restart does.
 
+## SMTP AUTH
+
+Bifrost terminates SMTP AUTH PLAIN locally on each leg, independently:
+the client authenticates *to bifrost*, and — completely separately —
+bifrost authenticates *to each backend* with that pool's own
+credentials. Either side can be configured without the other; see
+PROJECT.md's "No AUTH passthrough" paragraph for why the two never mix
+(auth is connection-scoped, a session spans many backends, so relaying
+one client's AUTH to N backends was never coherent — this feature is
+local termination, not relay).
+
+### Client leg: `listener.auth`
+
+```hcl
+listener {
+  starttls { ... }      # required: see below
+  auth {
+    user "rttskr-team" {
+      salt            = "1af90c3e2b7ad4f1"
+      hashed_password = "d989c9f1e4a0b3c7f5e2d1a6b8c4f0e3d7a9c2b5f8e1d4a7c0b3f6e9d2a5c8b1"
+    }
+  }
+}
+```
+
+- Requires `listener.starttls` — configuring `auth` without it is a load
+  error, because credentials must never be sent before TLS and there is
+  no plaintext-auth escape hatch (`internal/config/validate.go`,
+  `TestValidateDiagnostics/client_auth_without_starttls`).
+- `AUTH PLAIN` is advertised in `EHLO` only once TLS is up on that
+  connection, and only until the session authenticates — proven by
+  `TestAuthFullChainWithBackendCreds` (`test/integration/auth_test.go`),
+  which asserts the pre-STARTTLS `EHLO` carries no `AUTH` line and the
+  post-STARTTLS one does.
+- **Configuring auth makes it required.** Once `listener.auth` is set,
+  every `MAIL` before a successful `AUTH` gets
+  `530 5.7.0 Authentication required` and the session stays open (the
+  client may still authenticate and retry) — proven by
+  `TestAuthGateRequiresClientAuth`, which also asserts zero backend
+  dials happened before the gate fired.
+- Only `AUTH PLAIN` is supported: any other mechanism gets
+  `504 5.5.4 Unrecognized authentication type`, and `AUTH` on a
+  plaintext session gets
+  `538 5.7.11 Encryption required for requested authentication
+  mechanism` — `TestSessionAuthMechanismAndLockout`
+  (`internal/proxy/starttls_test.go`).
+- **Three failed attempts in one session close the connection**:
+  `421 4.7.0 Too many failed authentication attempts, closing
+  connection` — same test.
+
+#### Minting a credential
+
+`hashed_password` is `hex(sha256(salt || password))`, lowercase (config
+loading lowercases it for you, but mint it lowercase to keep diffs
+clean):
+
+```console
+$ printf '%s' "1af90c3e2b7ad4f1correct-horse" | sha256sum
+```
+
+This is deliberately the same shape kumo's own `inbound_auth.toml`
+credential store uses (a salt plus a hex-SHA256 hash) — bifrost's dev
+environment mints both from the same recipe via `make kumo-credential`,
+so one generated salt/password pair is valid on either side of a
+bifrost-fronted kumod without translation.
+
+### Backend leg: `pool.auth`
+
+```hcl
+pool "bulk" {
+  backend_tls = "starttls-verify"   # anything but "none"
+  auth {
+    username = "rttskr-team"
+    password = "pa55w0rd"           # plaintext: bifrost sends PLAIN as-is
+  }
+}
+```
+
+- Requires `backend_tls != "none"` — a load error otherwise, since
+  backend credentials must never cross the wire in cleartext
+  (`TestValidateDiagnostics/pool_auth_requires_backend_TLS`).
+- After the post-TLS `EHLO`, bifrost checks the backend's own
+  capability set for `AUTH PLAIN` (space-split, case-insensitive)
+  before sending anything. A backend that doesn't advertise it fails
+  the dial as `incompatible`, exactly like a missing `SIZE`/`8BITMIME`
+  capability — `TestDialAuthNotAdvertised`
+  (`internal/backend/auth_test.go`). This is an implicit backend
+  requirement independent of whatever the listener itself advertises
+  (see PROJECT.md's EHLO capability policy).
+- On success bifrost sends one exact line —
+  `AUTH PLAIN <base64("\x00user\x00pass")>` — before `MAIL`, byte-
+  verified end to end by `TestAuthFullChainWithBackendCreds`
+  (`test/integration/auth_test.go`) and at the dial layer by
+  `TestDialAuthHappyPath`.
+- The backend's own AUTH rejection never reaches the client: it just
+  fails that dial candidate, and the relay's ordinary failover/no-
+  backend synthesis takes over from there —
+  `TestAuthBackendCredsRejectedYieldsNoBackend` proves a bad pool
+  password surfaces as bifrost's own
+  `451 4.4.1 No backend available, try again later`, never the
+  backend's own `535`.
+
+#### Verdict semantics: bad backend credentials vs. a backend that's down
+
+A pool credential the backend permanently rejects (`5xx`, e.g.
+`535 5.7.8`) marks the server **incompatible** in `GET /servers` — the
+same verdict a missing capability gets — instead of flapping it
+`DOWN`/`UP` on every probe: `TestProbeAuthPermanentFailure`
+(`internal/health/probe_test.go`) and, at the dial layer,
+`TestDialAuthPermanentFailure` (`internal/backend/auth_test.go`,
+`AuthError.Permanent()` is true for any code ≥ 500). A transient
+rejection (`4xx`, e.g. `454`) is a plain probe failure instead — the
+server goes `DOWN` like any other failed probe, not `incompatible`:
+`TestProbeAuthTransientFailure`, `TestDialAuthTransientFailure`. Every
+`ehlo`-level-or-deeper probe against an `auth`-configured pool
+authenticates for real, so a rotated or mistyped backend password
+surfaces in `/servers` within one probe interval — the same guarantee
+capability drift already gets.
+
 ## Metrics reference
 
 Twelve stable names (golden-list tested by `TestMetricNamesStable`,
