@@ -365,12 +365,17 @@ func TestBackendBannerNotLeaked(t *testing.T) {
 
 func TestRelayBackendAuth(t *testing.T) {
 	// The relay sends AUTH PLAIN with pool credentials after handshake,
-	// before relaying MAIL.
+	// before relaying MAIL. Over a TLS-upgraded leg: backend.Dial refuses
+	// to originate AUTH over a connection that was not TLS-upgraded (see
+	// TestDialAuthRefusesCleartext), and config.Validate requires the
+	// same of a real pool.auth block.
 	srv := relayFake(t, fakesmtp.Script{
+		TLS:  fakesmtp.TestCert(t),
 		Caps: append(backendCaps(), "AUTH PLAIN"),
 	})
 
 	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].BackendTLS = "starttls"
 	cfg.Pools[0].Auth = &config.PoolAuth{
 		Username: "u",
 		Password: "p",
@@ -383,9 +388,12 @@ func TestRelayBackendAuth(t *testing.T) {
 	f.expect("250 2.1.5 OK")
 
 	// The backend's transcript must contain AUTH PLAIN with base64-encoded
-	// credentials before the relayed MAIL line. The exact encoding of
-	// "\x00u\x00p" is "AHUAcA==".
+	// credentials before the relayed MAIL line, after the STARTTLS
+	// upgrade and its re-EHLO. The exact encoding of "\x00u\x00p" is
+	// "AHUAcA==".
 	wantLines(t, srv, 0,
+		"STARTTLS\r\n",
+		"EHLO bifrost.test\r\n",
 		"AUTH PLAIN AHUAcA==\r\n",
 		"MAIL FROM:<a@b.example>\r\n",
 		"RCPT TO:<one@c.example>\r\n",
