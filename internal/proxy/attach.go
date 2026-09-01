@@ -45,6 +45,13 @@ func (t *txn) attachAndRelay(ctx context.Context, lines [][]byte) {
 	sawSaturated := false
 
 	candidates, pickErr := t.candidates(lines[0])
+
+	done, saturated, err := t.tryReuse(candidates, lines)
+	if done {
+		return
+	}
+	legErr, sawSaturated = err, saturated
+
 	for _, srv := range candidates {
 		pool := poolFor(t.cfg, srv)
 		if pool == nil {
@@ -88,23 +95,13 @@ func (t *txn) attachAndRelay(ctx context.Context, lines [][]byte) {
 				break
 			}
 
-			t.srv, t.c, t.release = srv, c, release
-			t.r.trackLeg(c)
-			t.record.pool, t.record.server = pool.Name, srv.Name
-			// A fresh dial is always this conn's first envelope; a reused
-			// conn (Task 4) sets a higher ordinal here instead.
-			t.record.connEnvelope = 1
-			t.cw.reset()
-			left, err := t.relayBatch(lines)
-			if err == nil {
-				return // the batch is answered, whatever the verdicts were
-			}
-			legErr = err
-			if t.cw.dirty() {
-				t.failLeg(err, left)
+			// A fresh dial is always this conn's first envelope; tryReuse
+			// above sets a higher ordinal for a reused one.
+			done, err := t.attachLeg(srv, c, release, pool, 1, lines)
+			if done {
 				return
 			}
-			t.dropLeg(err)
+			legErr = err
 			break // nothing reached the client: replay the batch elsewhere
 		}
 	}
@@ -123,6 +120,123 @@ func (t *txn) attachAndRelay(ctx context.Context, lines [][]byte) {
 		return
 	}
 	t.latchWith(RplNoBackend, lines)
+}
+
+// attachLeg finishes attaching a leg — dialed fresh by the walk above, or
+// a cached one tryReuse just consumed — and relays the batch over it:
+// the bookkeeping every successful attach shares, and the dirty/dropLeg
+// split every failure shares, so a reused leg that fails mid-batch is
+// treated as exactly the ordinary leg failure it is (dropLeg's own
+// detach(false) already clears t.c, so a broken reused leg is never
+// re-stashed).
+//
+// ordinal is this attach's connEnvelope ordinal: 1 for a fresh dial,
+// tryReuse's own running count for a reuse.
+//
+// It reports whether attachAndRelay is done: true means the batch was
+// answered however it went (success, or a dirty failure already
+// latched); false means nothing reached the client and the caller may
+// still try another candidate, with err the failure to report if
+// nothing else attaches either.
+func (t *txn) attachLeg(srv *config.Server, c *backend.Conn, release func(), pool *config.Pool, ordinal int, lines [][]byte) (done bool, err error) {
+	t.srv, t.c, t.release = srv, c, release
+	t.r.trackLeg(c)
+	t.record.pool, t.record.server = pool.Name, srv.Name
+	t.record.connEnvelope = ordinal
+	t.cw.reset()
+
+	left, err := t.relayBatch(lines)
+	if err == nil {
+		return true, nil // the batch is answered, whatever the verdicts were
+	}
+	if t.cw.dirty() {
+		t.failLeg(err, left)
+		return true, err
+	}
+	t.dropLeg(err)
+	return false, err
+}
+
+// tryReuse is attachAndRelay's first move: pick up the session's cached
+// leg instead of dialing, when the top candidate is still that leg's own
+// server and the live pool still allows another envelope on it. See the
+// design doc's Mechanics §Reuse for the contract this implements.
+//
+// done and err mirror attachLeg's own shape — false, _, nil means nothing
+// about the cache applied or it was not fit for reuse, and
+// attachAndRelay's normal walk should proceed untouched. saturated is set
+// when the lease (not the conn) was the obstacle: the walk's own final
+// reply must call that RplAllBusy, not RplNoBackend, if nothing else
+// attaches either.
+func (t *txn) tryReuse(candidates []*config.Server, lines [][]byte) (done bool, saturated bool, err error) {
+	a := t.tx.affinity
+	if a == nil || a.c == nil {
+		return false, false, nil
+	}
+	if len(candidates) == 0 || candidates[0] != a.srv {
+		// poolFor's own pointer-identity rule: the router moved on to a
+		// different server (a reload, a weight/round-robin pick), so this
+		// leg is no longer the one to reuse. It is left in the cache
+		// exactly as is — stash()'s own closeIfAny cleans up a stale
+		// entry like this the next time this session stashes.
+		return false, false, nil
+	}
+	pool := poolFor(t.cfg, a.srv)
+	if pool == nil || pool.ReuseEnvelopes <= 1 || a.envelopes >= pool.ReuseEnvelopes {
+		return false, false, nil
+	}
+
+	if !t.revalidate(a.c) {
+		t.r.lg.Debug("cached backend leg failed RSET revalidation; falling back to a fresh dial",
+			"server", a.srv.Name)
+		a.closeIfAny() // Abort + clear the slot; no health signal (see closeIfAny's own doc)
+		return false, false, nil
+	}
+
+	release := t.r.lease(a.srv)
+	if release == nil {
+		// Lost the race for the pool's last max_transactions slot. The
+		// spec prefers the cache retained over discarded here: leave it
+		// exactly as is for a later envelope, once whatever is holding
+		// the slot lets go.
+		return false, true, nil
+	}
+
+	c, srv := a.c, a.srv
+	ordinal := a.envelopes + 1
+	// Binding contract from Task 3's review: clear the slot's fields now,
+	// at the moment the conn is consumed — not merely read them. attachLeg
+	// below may run straight into a clean stash of this same leg, and
+	// stash()'s own closeIfAny would otherwise Abort the very connection
+	// this envelope just attached.
+	a.c, a.srv, a.envelopes = nil, nil, 0
+
+	t.r.metrics.BackendReuse(srv.Name, "reused")
+	done, err = t.attachLeg(srv, c, release, pool, ordinal, lines)
+	return done, false, err
+}
+
+// revalidate sends RSET on a cached leg and reads its whole reply —
+// multiline-safe, relayReply's own technique — without relaying a byte
+// of it to the client: the client never knew this leg existed before
+// this envelope, so a stale conn's failure here must be exactly as
+// invisible as one dying between envelopes always is. It reports
+// whether the leg answered 2xx and is fit for another envelope.
+func (t *txn) revalidate(c *backend.Conn) bool {
+	c.SetCommandClass(backend.MailRcpt)
+	if err := c.SendLine([]byte("RSET\r\n")); err != nil {
+		return false
+	}
+	rr := c.Replies()
+	for {
+		_, code, final, err := rr.Next()
+		if err != nil {
+			return false
+		}
+		if final {
+			return code/100 == 2
+		}
+	}
 }
 
 // candidates asks the router for this transaction's ordered candidate
@@ -375,13 +489,23 @@ func (t *txn) detachOrStash() {
 // as detach, so HandleTransaction's deferred detach(false) no-ops after
 // this runs.
 //
-// closeIfAny first: until Task 4 makes attachAndRelay consume the slot,
-// every envelope still dials fresh, so a session's second stash in a row
-// would otherwise overwrite the first one's fields and leak that
-// connection (no reader ever learns it should close). Harmless once Task
-// 4 lands too — a slot that was already drained before this envelope
-// attached is empty, so this is then always a no-op.
+// closeIfAny first: a slot tryReuse already drained before this envelope
+// attached is empty, so that call is then a no-op; a slot still holding
+// an unrelated leg (a mismatched-candidate case tryReuse left untouched,
+// or a session that never reused at all) gets closed here instead of
+// leaked.
+//
+// The nil check on t.tx.affinity is defensive, not reachable today: every
+// real Txn carries one (session.go); it only guards a hand-built Txn in a
+// test that also configures a reusable pool, the same defensive parity
+// detach() already has by never needing an affinity slot at all.
+// detach(true) does the same clean close that would have run had reuse
+// never applied to this leg.
 func (t *txn) stash() {
+	if t.tx.affinity == nil {
+		t.detach(true)
+		return
+	}
 	t.r.untrackLeg(t.c)
 	t.r.sig.Success(t.srv)
 	if t.release != nil {
