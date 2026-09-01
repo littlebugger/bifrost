@@ -68,8 +68,12 @@ func TestValidateDiagnostics(t *testing.T) {
 		{"malformed hashed_password", "testdata/bad-auth-short-hash.hcl", "malformed hashed_password", hcl.DiagError, 0},
 		{"auth user without a salt", "testdata/bad-auth-empty-salt.hcl", "auth user without a salt", hcl.DiagError, 0},
 		{"pool auth requires backend TLS", "testdata/bad-pool-auth-cleartext.hcl", "pool auth requires backend TLS", hcl.DiagError, 0},
+		{"pool auth requires TLS probes", "testdata/bad-pool-auth-plaintext-probe.hcl", "pool auth requires TLS probes", hcl.DiagError, 0},
 		{"pool auth without credentials", "testdata/bad-pool-auth-empty.hcl", "pool auth without credentials", hcl.DiagError, 0},
 		{"control character in auth credential", "testdata/bad-auth-control-char.hcl", "Control character in auth credential", hcl.DiagError, 0},
+		{"pool auth password conflict", "testdata/bad-pool-auth-both-passwords.hcl", "pool auth password conflict", hcl.DiagError, 0},
+		{"pool auth password_file unreadable", "testdata/bad-pool-auth-file-unreadable.hcl", "pool auth password_file unreadable", hcl.DiagError, 0},
+		{"pool auth password_file is empty", "testdata/bad-pool-auth-file-empty.hcl", "pool auth password_file is empty", hcl.DiagError, 0},
 	}
 
 	for _, tc := range cases {

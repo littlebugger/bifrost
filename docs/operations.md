@@ -430,6 +430,16 @@ PROJECT.md's "No AUTH passthrough" paragraph for why the two never mix
 one client's AUTH to N backends was never coherent — this feature is
 local termination, not relay).
 
+The two legs also differ on reload: a `listener.auth` edit (a revoked
+user, a rotated hash) needs a **restart** to take effect — each `Session`
+captures the listener's auth store once, at accept, so `POST /reload` /
+`SIGHUP` warns `listener auth changed: restart required to apply` rather
+than silently leaving sessions on the old store (`RestartRequired`,
+`internal/config/holder.go`). A `pool.auth` edit is **reload-live**: both
+the relay and the health prober re-read credentials off the config
+holder on every transaction/probe, so a rotated backend password applies
+at the next `MAIL`, no restart needed.
+
 ### Client leg: `listener.auth`
 
 ```hcl
@@ -438,7 +448,7 @@ listener {
   auth {
     user "rttskr-team" {
       salt            = "1af90c3e2b7ad4f1"
-      hashed_password = "d989c9f1e4a0b3c7f5e2d1a6b8c4f0e3d7a9c2b5f8e1d4a7c0b3f6e9d2a5c8b1"
+      hashed_password = "466aec5e9c8096eb07b86d055773ea4267b548c25831c6d56a5c8ff7f5497977"
     }
   }
 }
@@ -520,6 +530,27 @@ pool "bulk" {
   password surfaces as bifrost's own
   `451 4.4.1 No backend available, try again later`, never the
   backend's own `535`.
+
+#### Kubernetes: password from a mounted secret
+
+`password` and `password_file` are mutually exclusive — set exactly one.
+`password_file` points at a file holding the plaintext password (a
+trailing newline is trimmed for you):
+
+```hcl
+auth {
+  username      = "rttskr-team"
+  password_file = "/var/run/secrets/smtp/password"
+}
+```
+
+Mount the credential as a Kubernetes `Secret` volume and point
+`password_file` at the mounted path. Relative paths resolve against the
+config file's own directory, same as `backend_tls_ca`. Rotation is
+reload-live: `password_file` is re-read on every `POST /reload` /
+`SIGHUP`, same as the rest of `pool.auth` — no restart needed when the
+Secret's contents change (kubelet's own propagation delay for mounted
+Secrets still applies before a rotated file shows up in the container).
 
 #### Verdict semantics: bad backend credentials vs. a backend that's down
 

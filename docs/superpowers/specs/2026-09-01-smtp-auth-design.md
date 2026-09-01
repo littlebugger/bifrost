@@ -213,3 +213,11 @@ user; pool flips to `outgoing:587` / `backend_tls = "starttls"` + auth.
 The blocked `:2525` policy carve-out in outgoing/policy/init.lua
 becomes unnecessary; `make smarthost-bifrost` stops clearing
 bounce-master's credentials.
+
+## Amendment (2026-09-01, user request): password_file
+
+`pool.auth` accepts `password_file` as a mutually exclusive alternative to
+`password`, for k8s secret mounts: the file is read at every config load
+(so SIGHUP rotation is live), trailing CR/LF trimmed, and the result is
+the effective password everywhere `Password` was already consumed.
+Unreadable or empty (post-trim) files are validation errors.

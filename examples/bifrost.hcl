@@ -67,7 +67,7 @@ listener {
   # auth {
   #   user "rttskr-team" {
   #     salt            = "1af90c3e2b7ad4f1"
-  #     hashed_password = "d989c9f1e4a0b3c7f5e2d1a6b8c4f0e3d7a9c2b5f8e1d4a7c0b3f6e9d2a5c8b1"
+  #     hashed_password = "466aec5e9c8096eb07b86d055773ea4267b548c25831c6d56a5c8ff7f5497977"
   #   }
   # }
 }
@@ -124,6 +124,7 @@ pool "bulk" {
   # auth {
   #   username = "rttskr-team"
   #   password = "pa55w0rd"
+  #   # password_file = "/var/run/secrets/smtp/password"  # alternative to password (e.g. a k8s Secret mount); exactly one of the two
   # }
 }
 

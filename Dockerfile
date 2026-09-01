@@ -6,6 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /bifrost ./cmd/bifrost
 
 FROM alpine:3.22
+RUN apk add --no-cache ca-certificates
 COPY --from=build /bifrost /usr/local/bin/bifrost
 ENTRYPOINT ["bifrost"]
 CMD ["-f", "/etc/bifrost/bifrost.hcl"]

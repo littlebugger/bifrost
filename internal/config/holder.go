@@ -90,7 +90,47 @@ func RestartRequired(old, newCfg *Config) []string {
 	if old.Defaults.Timeouts.SessionMax != newCfg.Defaults.Timeouts.SessionMax {
 		add("session_max", old.Defaults.Timeouts.SessionMax, newCfg.Defaults.Timeouts.SessionMax)
 	}
+	if listenerAuthChanged(old.Listener.Auth, newCfg.Listener.Auth) {
+		// Bypasses add(from, to): a Session captures Listener.Auth at
+		// accept (see internal/proxy), so revoking or re-keying a user
+		// here is exactly BindChange's "silently applies to nobody"
+		// failure mode — but unlike hostname/capabilities, the "from"/"to"
+		// values here are credential material (salts, SHA-256 hashes) that
+		// must never land in a reload log or a POST /reload response.
+		out = append(out, "listener auth changed: restart required to apply")
+	}
 	return out
+}
+
+// listenerAuthChanged reports whether old and newCfg's listener auth
+// differ: one is configured and the other isn't, or the user sets don't
+// match (name, salt, or hash) — order-independent, so reordering user
+// blocks in the file alone doesn't spuriously warn.
+func listenerAuthChanged(old, newCfg *ListenerAuth) bool {
+	if (old == nil) != (newCfg == nil) {
+		return true
+	}
+	if old == nil {
+		return false
+	}
+	if len(old.Users) != len(newCfg.Users) {
+		return true
+	}
+	oldKeys := authUserKeys(old.Users)
+	newKeys := authUserKeys(newCfg.Users)
+	sort.Strings(oldKeys)
+	sort.Strings(newKeys)
+	return !slices.Equal(oldKeys, newKeys)
+}
+
+// authUserKeys reduces each AuthUser to one comparable string (its full
+// credential triple, NUL-separated so no field can bleed into the next).
+func authUserKeys(users []AuthUser) []string {
+	keys := make([]string, len(users))
+	for i, u := range users {
+		keys[i] = u.Name + "\x00" + u.Salt + "\x00" + u.HashedPassword
+	}
+	return keys
 }
 
 // adminBind is cfg's admin bind, or "" when it has no admin block —

@@ -202,6 +202,22 @@ func TestLoadAuth(t *testing.T) {
 	}
 }
 
+// TestLoadAuthPasswordFile proves password_file resolves relative to the
+// config file (like backend_tls_ca), gets trimmed of its trailing
+// newline, and reaches CheckParams.AuthPassword — i.e. the file read runs
+// before resolvePoolAuth's CheckParams copy, so the health prober gets
+// the same password as the relay.
+func TestLoadAuthPasswordFile(t *testing.T) {
+	cfg := mustLoad(t, "testdata/auth-password-file.hcl")
+	outgoing := poolNamed(cfg.Pools, "outgoing")
+	if outgoing == nil || outgoing.Auth == nil || outgoing.Auth.Password != "pa55w0rd" {
+		t.Fatalf("pool auth = %+v, want Password = %q", outgoing, "pa55w0rd")
+	}
+	if len(outgoing.Servers) == 0 || outgoing.Servers[0].Check.AuthPassword != "pa55w0rd" {
+		t.Fatalf("Servers[0].Check.AuthPassword = %q, want %q", outgoing.Servers[0].Check.AuthPassword, "pa55w0rd")
+	}
+}
+
 func TestLoadUnknownAttribute(t *testing.T) {
 	cfg, diags := Load("testdata/unknown-attribute.hcl")
 	if !diags.HasErrors() {

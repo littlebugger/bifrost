@@ -34,9 +34,10 @@ func TestTxnLogRecordComplete(t *testing.T) {
 	lg, buf := captureLog()
 	tx := &txn{
 		r:  &Relay{lg: lg},
-		tx: &Txn{ClientIP: netip.MustParseAddr("192.0.2.1"), Helo: "client.example"},
+		tx: &Txn{ClientIP: netip.MustParseAddr("192.0.2.1"), Helo: "client.example", Authn: "alice"},
 	}
 	tx.record.start = time.Now().Add(-42 * time.Millisecond)
+	tx.record.authn = tx.tx.Authn
 	tx.record.pool, tx.record.server = "p", "s1"
 	tx.record.failoverAttempts = 1
 	tx.record.observe("MAIL", 250, "250 2.1.0 OK")
@@ -53,6 +54,7 @@ func TestTxnLogRecordComplete(t *testing.T) {
 		"mail_verdict": float64(250), "rcpt_count": float64(1), "rcpt_verdicts_class": "2xx=1",
 		"data_verdict": "250 2.0.0 OK: queued", "bytes": float64(13),
 		"failover_attempts": float64(1), "synth": "", "duplicate_risk": false,
+		"authn": "alice",
 	}
 	for k, v := range want {
 		if got := fields[k]; got != v {
@@ -96,6 +98,13 @@ func TestTxnLogSynthAndDuplicateRisk(t *testing.T) {
 	// in data_verdict, and it must not be confused with synth.
 	if fields["data_verdict"] != "" {
 		t.Errorf("data_verdict = %q, want empty (no verdict was ever relayed)", fields["data_verdict"])
+	}
+	// This transaction's Txn never set Authn: the session never
+	// authenticated, and the field must still be present, just empty.
+	if _, ok := fields["authn"]; !ok {
+		t.Errorf("missing authn field")
+	} else if fields["authn"] != "" {
+		t.Errorf("authn = %v, want empty (session never authenticated)", fields["authn"])
 	}
 }
 

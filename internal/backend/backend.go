@@ -58,7 +58,9 @@ type Opts struct {
 	// originate AUTH PLAIN against the backend after the superset check:
 	// the pool's own credentials, not the client's (this is a fresh,
 	// balancer-owned exchange with the backend, not a splice of anything
-	// the client sent).
+	// the client sent). Dial refuses outright, before any AUTH bytes, if
+	// TLSMode is empty or "none" — credentials never cross the wire
+	// before a TLS upgrade (see Dial).
 	AuthUsername string
 	AuthPassword string
 }
@@ -150,6 +152,16 @@ func Dial(ctx context.Context, srv *config.Server, opts Opts) (*Conn, error) {
 	}
 
 	if opts.AuthUsername != "" || opts.AuthPassword != "" {
+		// Belt-and-braces: config.Validate already rejects a pool auth
+		// block paired with backend_tls = "none" (and, since this fix
+		// wave, a check that resolves tls = "none" too), but Dial refuses
+		// on its own rather than trust every caller got that right —
+		// credentials must never reach the wire before a TLS upgrade.
+		if opts.TLSMode == "" || opts.TLSMode == "none" {
+			_ = c.conn.Close()
+			return nil, &HandshakeError{Addr: c.addr, Stage: "auth",
+				Err: fmt.Errorf("refusing to send AUTH PLAIN over a connection that was not TLS-upgraded (tls %q)", opts.TLSMode)}
+		}
 		if !c.caps.HasAuthPlain() {
 			_ = c.conn.Close()
 			return nil, &IncompatibleError{Missing: []string{"AUTH PLAIN"}}

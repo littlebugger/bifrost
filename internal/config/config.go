@@ -159,11 +159,20 @@ type AuthUser struct {
 // Bifrost presents to every server in the pool. Plaintext, unlike
 // ListenerAuth's hash, because it must be replayed verbatim in the
 // backend's own AUTH exchange.
+//
+// PasswordFile is an alternative to Password (e.g. a Kubernetes secret
+// mount): exactly one of the two may be set in source. Once Load has run,
+// Password always holds the effective credential — if PasswordFile was
+// set and readable, its trimmed contents were copied into Password (see
+// resolveBackendCAs) — so every other consumer (validatePoolAuth,
+// resolvePoolAuth's CheckParams copy, attach.go) only ever reads Password.
 type PoolAuth struct {
-	Username string
-	Password string
+	Username     string
+	Password     string
+	PasswordFile string
 
-	rng hcl.Range
+	rng               hcl.Range
+	passwordFileRange hcl.Range // anchors password_file diagnostics at the attribute itself
 }
 
 // Pool is a named group of weighted backend servers.

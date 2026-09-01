@@ -122,12 +122,16 @@ type rawAuthUser struct {
 }
 
 // rawPoolAuth is the pool's backend-leg SMTP AUTH block: the plaintext
-// credentials Bifrost presents to every server in the pool.
+// credentials Bifrost presents to every server in the pool. Exactly one
+// of Password/PasswordFile must end up set — see validatePoolAuth and
+// resolveBackendCAs' password_file read.
 type rawPoolAuth struct {
 	Range hcl.Range `hcl:",def_range"`
 
-	Username string `hcl:"username"`
-	Password string `hcl:"password"`
+	Username          string    `hcl:"username"`
+	Password          string    `hcl:"password,optional"`
+	PasswordFile      string    `hcl:"password_file,optional"`
+	PasswordFileRange hcl.Range `hcl:"password_file,attr_range"`
 }
 
 type rawServer struct {

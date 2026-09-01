@@ -111,3 +111,40 @@ func TestHolderDiffSummary(t *testing.T) {
 		t.Errorf("DiffSummary(x, x) = %q, want %q", got, "no changes")
 	}
 }
+
+// TestRestartRequiredListenerAuth: a listener auth edit (here, a user's
+// hash changing — a revoked/rotated credential) must warn "restart
+// required", since a Session captures Listener.Auth at accept and a
+// reload alone leaves already-open and newly-accepted sessions on the old
+// store. Identical auth must warn about nothing, and the warning text
+// must never contain the hash itself.
+func TestRestartRequiredListenerAuth(t *testing.T) {
+	hashA := strings.Repeat("a", 64)
+	hashB := strings.Repeat("b", 64)
+	authWith := func(hash string) *ListenerAuth {
+		return &ListenerAuth{Users: []AuthUser{{Name: "alice", Salt: "salt", HashedPassword: hash}}}
+	}
+
+	oldCfg := &Config{Listener: Listener{Auth: authWith(hashA)}}
+	changedCfg := &Config{Listener: Listener{Auth: authWith(hashB)}}
+
+	warnings := RestartRequired(oldCfg, changedCfg)
+	var authWarning string
+	for _, w := range warnings {
+		if strings.Contains(w, "listener auth changed") {
+			authWarning = w
+		}
+	}
+	if authWarning == "" {
+		t.Fatalf("RestartRequired(old, changed) = %v, want a listener auth warning", warnings)
+	}
+	if strings.Contains(authWarning, hashA) || strings.Contains(authWarning, hashB) {
+		t.Errorf("warning %q echoes credential material", authWarning)
+	}
+
+	for _, w := range RestartRequired(oldCfg, oldCfg) {
+		if strings.Contains(w, "listener auth changed") {
+			t.Errorf("RestartRequired(old, old) = %v, want no listener auth warning for identical auth", w)
+		}
+	}
+}
