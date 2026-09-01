@@ -124,6 +124,7 @@ pool "bulk" {
   # auth {
   #   username = "rttskr-team"
   #   password = "pa55w0rd"
+  #   # password_file = "/var/run/secrets/smtp/password"  # alternative to password (e.g. a k8s Secret mount); exactly one of the two
   # }
 }
 

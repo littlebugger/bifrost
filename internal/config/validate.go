@@ -285,8 +285,12 @@ func validHexHash(h string) bool {
 // only be used over an encrypted backend leg — both the traffic path
 // (backend_tls) and every health probe in the pool (check.tls, which can
 // override backend_tls per server or per pool, see resolveCheck) — and
-// both credentials must be present. Reuses controlCharIndex for the same
-// injection reason as validateListenerAuth.
+// username plus at least one of password/password_file must be present.
+// By the time this runs, resolveBackendCAs has already turned a readable
+// password_file into Password, so this only needs to check Password —
+// password_file's own unreadable/empty/conflict cases are load-time
+// diagnostics raised there, not here. Reuses controlCharIndex for the
+// same injection reason as validateListenerAuth.
 func validatePoolAuth(p Pool) hcl.Diagnostics {
 	auth := p.Auth
 	if auth == nil {
@@ -302,7 +306,7 @@ func validatePoolAuth(p Pool) hcl.Diagnostics {
 		diags = append(diags, errDiag(checkRng, "pool auth requires TLS probes",
 			fmt.Sprintf("pool %q sets auth but a check resolves tls = \"none\"; probes carry the pool credentials, and a check { tls = \"none\" } override would hand them to whatever answers the cleartext EHLO.", p.Name)))
 	}
-	if auth.Username == "" || auth.Password == "" {
+	if auth.Username == "" || (auth.Password == "" && auth.PasswordFile == "") {
 		diags = append(diags, errDiag(rng, "pool auth without credentials",
 			fmt.Sprintf("pool %q auth block is missing username or password.", p.Name)))
 	}

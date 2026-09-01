@@ -83,6 +83,40 @@ func resolveBackendCAs(cfg *Config) hcl.Diagnostics {
 		}
 	}
 
+	// password_file (a Kubernetes secret mount, typically) is read here,
+	// before the CheckParams copy below, so the file-derived password
+	// reaches every consumer the same way an inline password would.
+	// Unreadable/empty are load-time diagnostics for the same reason an
+	// unreadable backend_tls_ca is: `-c` should catch it, not a probe
+	// failing closed in production. A rotated secret is picked up on the
+	// next reload/SIGHUP, same as any other file-backed config value.
+	for i := range cfg.Pools {
+		pool := &cfg.Pools[i]
+		auth := pool.Auth
+		if auth == nil || auth.PasswordFile == "" {
+			continue
+		}
+		rng := fallbackRange(auth.passwordFileRange, auth.rng)
+		if auth.Password != "" {
+			diags = append(diags, errDiag(rng, "pool auth password conflict",
+				fmt.Sprintf("pool %q auth sets both password and password_file; they are mutually exclusive.", pool.Name)))
+			continue
+		}
+		raw, err := os.ReadFile(auth.PasswordFile)
+		if err != nil {
+			diags = append(diags, errDiag(rng, "pool auth password_file unreadable",
+				fmt.Sprintf("pool %q auth password_file %q: %s", pool.Name, auth.PasswordFile, err)))
+			continue
+		}
+		password := strings.TrimRight(string(raw), "\r\n")
+		if password == "" {
+			diags = append(diags, errDiag(rng, "pool auth password_file is empty",
+				fmt.Sprintf("pool %q auth password_file %q is empty.", pool.Name, auth.PasswordFile)))
+			continue
+		}
+		auth.Password = password
+	}
+
 	// resolvePoolAuth copies every pool's backend-leg SMTP AUTH credentials
 	// into that pool's health check parameters, the same way resolveBackendCAs
 	// copies the TLS CA pool. Both the relay path (internal/proxy) and the
@@ -123,6 +157,9 @@ func resolveFilePaths(cfg *Config, configPath string) {
 	}
 	for i := range cfg.Pools {
 		cfg.Pools[i].BackendTLSCA = resolve(cfg.Pools[i].BackendTLSCA)
+		if cfg.Pools[i].Auth != nil {
+			cfg.Pools[i].Auth.PasswordFile = resolve(cfg.Pools[i].Auth.PasswordFile)
+		}
 	}
 }
 
@@ -335,7 +372,13 @@ func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 		p.Servers = append(p.Servers, s)
 	}
 	if r.Auth != nil {
-		p.Auth = &PoolAuth{Username: r.Auth.Username, Password: r.Auth.Password, rng: r.Auth.Range}
+		p.Auth = &PoolAuth{
+			Username:          r.Auth.Username,
+			Password:          r.Auth.Password,
+			PasswordFile:      r.Auth.PasswordFile,
+			rng:               r.Auth.Range,
+			passwordFileRange: r.Auth.PasswordFileRange,
+		}
 	}
 	return p, diags
 }

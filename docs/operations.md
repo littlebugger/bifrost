@@ -531,6 +531,27 @@ pool "bulk" {
   `451 4.4.1 No backend available, try again later`, never the
   backend's own `535`.
 
+#### Kubernetes: password from a mounted secret
+
+`password` and `password_file` are mutually exclusive — set exactly one.
+`password_file` points at a file holding the plaintext password (a
+trailing newline is trimmed for you):
+
+```hcl
+auth {
+  username      = "rttskr-team"
+  password_file = "/var/run/secrets/smtp/password"
+}
+```
+
+Mount the credential as a Kubernetes `Secret` volume and point
+`password_file` at the mounted path. Relative paths resolve against the
+config file's own directory, same as `backend_tls_ca`. Rotation is
+reload-live: `password_file` is re-read on every `POST /reload` /
+`SIGHUP`, same as the rest of `pool.auth` — no restart needed when the
+Secret's contents change (kubelet's own propagation delay for mounted
+Secrets still applies before a rotated file shows up in the container).
+
 #### Verdict semantics: bad backend credentials vs. a backend that's down
 
 A pool credential the backend permanently rejects (`5xx`, e.g.
