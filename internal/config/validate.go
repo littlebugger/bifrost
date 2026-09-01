@@ -80,6 +80,18 @@ func negativeMaxTxn(value int, rng hcl.Range, what string) hcl.Diagnostics {
 		fmt.Sprintf("%s max_transactions %d must be >= 0 (0 means unlimited).", what, value))}
 }
 
+// negativeReuseEnvelopes reports a negative reuse_envelopes written at the
+// pool tier. It reports only when the value was actually set in the source
+// (rng is zero when omitted), so a single bad number produces a single
+// diagnostic anchored at the attribute.
+func negativeReuseEnvelopes(value int, rng hcl.Range) hcl.Diagnostics {
+	if value >= 0 || rng == (hcl.Range{}) {
+		return nil
+	}
+	return hcl.Diagnostics{errDiag(rng, "reuse_envelopes out of range",
+		fmt.Sprintf("reuse_envelopes %d must be >= 0.", value))}
+}
+
 func errDiag(rng hcl.Range, summary, detail string) *hcl.Diagnostic {
 	return &hcl.Diagnostic{Severity: hcl.DiagError, Summary: summary, Detail: detail, Subject: &rng}
 }
@@ -357,6 +369,7 @@ func (c *Config) validatePools() hcl.Diagnostics {
 		diags = append(diags, validatePoolBackendTLS(p)...)
 		diags = append(diags, validatePoolAuth(p)...)
 		diags = append(diags, negativeMaxTxn(p.MaxTransactions, p.maxTxnRange, "pool")...)
+		diags = append(diags, negativeReuseEnvelopes(p.ReuseEnvelopes, p.reuseEnvelopesRange)...)
 
 		seenServer := map[string]bool{}
 		for _, s := range p.Servers {

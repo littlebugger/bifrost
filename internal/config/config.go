@@ -184,6 +184,7 @@ type Pool struct {
 	BackendTLSCA         string
 	EhloName             string // resolved: pool -> defaults.ehlo_name -> listener hostname
 	MaxTransactions      int    // pool-level default for servers' max_transactions
+	ReuseEnvelopes       int
 	Check                CheckParams
 	Servers              []Server
 	Auth                 *PoolAuth // nil: backend-leg SMTP AUTH disabled
@@ -198,7 +199,8 @@ type Pool struct {
 	rng     hcl.Range
 	caRange hcl.Range // anchors backend_tls_ca diagnostics at the attribute itself
 
-	maxTxnRange hcl.Range // set only when this tier wrote max_transactions itself
+	maxTxnRange         hcl.Range // set only when this tier wrote max_transactions itself
+	reuseEnvelopesRange hcl.Range // set only when this tier wrote reuse_envelopes itself
 }
 
 // Server is one backend destination within a Pool.

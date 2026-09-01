@@ -159,6 +159,8 @@ type rawPool struct {
 	EhloName             string       `hcl:"ehlo_name,optional"`
 	MaxTransactions      *int         `hcl:"max_transactions"`
 	MaxTransactionsRange hcl.Range    `hcl:"max_transactions,attr_range"`
+	ReuseEnvelopes       *int         `hcl:"reuse_envelopes,optional"`
+	ReuseEnvelopesRange  hcl.Range    `hcl:"reuse_envelopes,attr_range"`
 	Check                *rawCheck    `hcl:"check,block"`
 	Servers              []rawServer  `hcl:"server,block"`
 	Auth                 *rawPoolAuth `hcl:"auth,block"`

@@ -200,6 +200,9 @@ func TestLoadAuth(t *testing.T) {
 		outgoing.Auth.Username != "rttskr-team" || outgoing.Auth.Password != "pa55w0rd" {
 		t.Fatalf("pool auth = %+v", outgoing)
 	}
+	if outgoing.ReuseEnvelopes != 50 {
+		t.Errorf("pool outgoing ReuseEnvelopes = %d, want 50", outgoing.ReuseEnvelopes)
+	}
 }
 
 // TestLoadAuthPasswordFile proves password_file resolves relative to the

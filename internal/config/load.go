@@ -358,8 +358,15 @@ func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 		BackendTLSCA:         r.BackendTLSCA,
 		EhloName:             r.EhloName,
 		MaxTransactions:      intOr(r.MaxTransactions, 0),
+		ReuseEnvelopes:       intOr(r.ReuseEnvelopes, 0),
 		rng:                  r.Range,
 		caRange:              r.BackendTLSCARange,
+	}
+	if r.MaxTransactions != nil {
+		p.maxTxnRange = r.MaxTransactionsRange
+	}
+	if r.ReuseEnvelopes != nil {
+		p.reuseEnvelopesRange = r.ReuseEnvelopesRange
 	}
 	if r.Check != nil {
 		c, cd := r.Check.convert()

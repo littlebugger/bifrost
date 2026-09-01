@@ -19,8 +19,9 @@ listener {
 }
 
 pool "outgoing" {
-  balance     = "roundrobin"
-  backend_tls = "starttls"
+  balance           = "roundrobin"
+  backend_tls       = "starttls"
+  reuse_envelopes   = 50
   auth {
     username = "rttskr-team"
     password = "pa55w0rd"
