@@ -224,6 +224,17 @@ func TestSessionAuthRequiresTLS538(t *testing.T) {
 	c.expect("538 5.7.11 Encryption required for requested authentication mechanism")
 }
 
+// TestSessionAuthBeforeEhlo503: AUTH before any EHLO/HELO is a sequence
+// violation, same as MAIL or RCPT (TestBadSequence) — checked before the
+// TLS-encryption gate, so a configured listener still answers 503, not 538.
+func TestSessionAuthBeforeEhlo503(t *testing.T) {
+	c := newTestClient(t, authTestConfig(), fakesmtp.TestCert(t), &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+
+	c.send("AUTH PLAIN " + authPlainPayload("rttskr-team", "pw"))
+	c.expect("503 5.5.1 Bad sequence of commands")
+}
+
 // TestSessionAuthFullFlowAfterSTARTTLS covers scenario 3 (the whole
 // post-STARTTLS lifecycle) and scenario 6 (authed survives the EHLO
 // reset): EHLO advertises AUTH PLAIN once TLS is up, MAIL is gated until
@@ -357,9 +368,9 @@ func TestSessionAuthContinuationWakesOnDrain(t *testing.T) {
 
 	cancel()
 
-	// The read error is a plain deadline-exceeded (no drain-specific
-	// wording): authReadError defers anything other than bare-LF/
-	// over-long to the session's own handleReadError, unchanged.
-	c.expect("421 4.4.2 Idle timeout, closing connection")
+	// The read is interrupted by the drain itself, not an idle timeout:
+	// the continuation read now checks ctx.Err() first, same as Run's own
+	// loop, so this gets the shutdown reply (421 4.3.0), not 4.4.2.
+	c.expect("421 4.3.0 Service shutting down, closing connection")
 	c.expectClosed()
 }

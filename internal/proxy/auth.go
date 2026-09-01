@@ -78,6 +78,13 @@ func (s *Session) auth(ctx context.Context, args []byte) (stop bool, err error) 
 		// out the full idle deadline.
 		line, rerr := s.readCommand(ctx)
 		if rerr != nil {
+			if ctx.Err() != nil {
+				// Mirrors Run's own loop (session.go): the read was
+				// interrupted BY the drain (readCommand's wakeOnCancel), so
+				// this is the shutdown row of the contract, not an idle
+				// client: 421 4.3.0, not 421 4.4.2.
+				return true, s.goodbye(RplShuttingDown)
+			}
 			return s.authReadError(rerr)
 		}
 		initial = bytes.TrimRight(line, "\r\n")
