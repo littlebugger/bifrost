@@ -32,6 +32,39 @@ func TestReplyBuilders(t *testing.T) {
 	}
 }
 
+// TestAuthReplies validates that each AUTH reply constant has the correct
+// format: starts with a 3-digit code followed by a space, and ends with \r\n.
+func TestAuthReplies(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		code string
+	}{
+		{"RplAuthOK", RplAuthOK, "235"},
+		{"RplAuthContinue", RplAuthContinue, "334"},
+		{"RplAuthMalformed", RplAuthMalformed, "501"},
+		{"RplAuthCancelled", RplAuthCancelled, "501"},
+		{"RplAuthMechanism", RplAuthMechanism, "504"},
+		{"RplAuthRequired", RplAuthRequired, "530"},
+		{"RplAuthFailed", RplAuthFailed, "535"},
+		{"RplAuthEncryption", RplAuthEncryption, "538"},
+		{"RplAuthTooMany", RplAuthTooMany, "421"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Check starts with code and space
+			prefix := tt.code + " "
+			if !strings.HasPrefix(tt.got, prefix) {
+				t.Errorf("%s: want to start with %q, but got %q", tt.name, prefix, tt.got)
+			}
+			// Check ends with \r\n
+			if !strings.HasSuffix(tt.got, "\r\n") {
+				t.Errorf("%s: want to end with \\r\\n, but got %q", tt.name, tt.got)
+			}
+		})
+	}
+}
+
 // TestNoReplyLiteralsOutsideReplies is decision D8's audit: replies.go is
 // the closed enum of everything Bifrost says for itself, so an SMTP reply
 // literal anywhere else in the package would be an unaudited synthesized

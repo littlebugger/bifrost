@@ -78,6 +78,19 @@ const (
 	// backend leg dropped — so the client keeps its session and its right
 	// to retry on it.
 	RplBackendClosing = "451 4.4.2 Backend closed the transaction\r\n"
+
+	// AUTH (RFC 4954). Local termination only (spec 2026-09-01): bifrost
+	// verifies the client itself; nothing AUTH-related is ever relayed.
+	RplAuthOK         = "235 2.7.0 Authentication succeeded\r\n"
+	RplAuthContinue   = "334 \r\n"
+	RplAuthMalformed  = "501 5.5.2 Invalid authentication response\r\n"
+	RplAuthCancelled  = "501 5.0.0 Authentication cancelled\r\n"
+	RplAuthMechanism  = "504 5.5.4 Unrecognized authentication type\r\n"
+	RplAuthRequired   = "530 5.7.0 Authentication required\r\n"
+	RplAuthFailed     = "535 5.7.8 Authentication credentials invalid\r\n"
+	RplAuthEncryption = "538 5.7.11 Encryption required for requested authentication mechanism\r\n"
+	// RplAuthTooMany is always followed by a close.
+	RplAuthTooMany = "421 4.7.0 Too many failed authentication attempts, closing connection\r\n"
 )
 
 // RplBanner is the connection greeting: "220 <hostname> ESMTP".
