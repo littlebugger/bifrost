@@ -71,10 +71,12 @@ func (s *Session) auth(ctx context.Context, args []byte) (stop bool, err error) 
 		if err := s.write(RplAuthContinue); err != nil {
 			return false, err
 		}
-		if err := s.armDeadline(); err != nil {
-			return false, err
-		}
-		line, rerr := smtpwire.ReadCommandLine(s.br, maxCommandLine)
+		// readCommand, not a bare armDeadline+ReadCommandLine: it also
+		// installs the drain watcher (wakeOnCancel), so a shutdown that
+		// lands while a client is parked at "334 " gets the same prompt
+		// wakeup an ordinary command read would get, instead of sitting
+		// out the full idle deadline.
+		line, rerr := s.readCommand(ctx)
 		if rerr != nil {
 			return s.authReadError(rerr)
 		}

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"strings"
@@ -320,5 +321,45 @@ func TestSessionAuthMechanismAndLockout(t *testing.T) {
 	c.expect("535 5.7.8 Authentication credentials invalid")
 	c.send("AUTH PLAIN " + wrong)
 	c.expect("421 4.7.0 Too many failed authentication attempts, closing connection")
+	c.expectClosed()
+}
+
+// TestSessionAuthContinuationWakesOnDrain covers the drain contract for
+// the AUTH continuation read: a client parked at "334 " (sent AUTH PLAIN
+// with no initial response, and never sends a payload) must be unblocked
+// promptly when the session's context is cancelled — the same wakeup an
+// ordinary between-commands read gets (readCommand's wakeOnCancel) — not
+// left waiting on the session's own idle timer.
+//
+// No client-idle timeout is configured here at all (authTestConfig builds
+// on testConfig, which leaves Timeouts zero), so the continuation read
+// would otherwise block forever: only ctx cancellation can unblock it.
+// That makes this test fail closed (it hangs until the harness's 5s
+// wait() timeout) if the continuation read ever regresses to a bare
+// armDeadline+ReadCommandLine again.
+func TestSessionAuthContinuationWakesOnDrain(t *testing.T) {
+	certCfg := fakesmtp.TestCert(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := newTestClientCtx(ctx, t, authTestConfig(), certCfg, &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+	c.send("EHLO client.example")
+	c.reply()
+	c.send("STARTTLS")
+	c.expect("220 2.0.0 Ready to start TLS")
+	c.upgrade(certCfg)
+	c.send("EHLO client.example")
+	c.reply()
+
+	c.send("AUTH PLAIN")
+	c.expect("334 ")
+
+	cancel()
+
+	// The read error is a plain deadline-exceeded (no drain-specific
+	// wording): authReadError defers anything other than bare-LF/
+	// over-long to the session's own handleReadError, unchanged.
+	c.expect("421 4.4.2 Idle timeout, closing connection")
 	c.expectClosed()
 }
