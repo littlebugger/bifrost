@@ -218,3 +218,30 @@ func TestCapabilitiesDefaultWithCertAppendsStartTLS(t *testing.T) {
 		t.Errorf("Listener.Capabilities = %q, want %q", cfg.Listener.Capabilities, want)
 	}
 }
+
+// TestPoolAuthResolvedToCheckParams verifies that pool-level auth
+// credentials are copied into each server's resolved CheckParams, the way
+// CAPool is, so the probe ladder sees the same credentials the traffic path uses.
+func TestPoolAuthResolvedToCheckParams(t *testing.T) {
+	cfg, diags := Load("testdata/auth.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("Load(auth.hcl) diags = %v", diags)
+	}
+
+	pool := poolNamed(cfg.Pools, "outgoing")
+	if pool == nil {
+		t.Fatalf("no pool named %q", "outgoing")
+	}
+
+	server := serverNamed(pool.Servers, "s1")
+	if server == nil {
+		t.Fatalf("no server named %q", "s1")
+	}
+
+	if server.Check.AuthUsername != "rttskr-team" {
+		t.Errorf("Server.Check.AuthUsername = %q, want %q", server.Check.AuthUsername, "rttskr-team")
+	}
+	if server.Check.AuthPassword != "pa55w0rd" {
+		t.Errorf("Server.Check.AuthPassword = %q, want %q", server.Check.AuthPassword, "pa55w0rd")
+	}
+}

@@ -89,6 +89,13 @@ type CheckParams struct {
 	// configured" — the platform's own roots.
 	CAPool *x509.CertPool
 
+	// AuthUsername and AuthPassword are the pool's plaintext backend-leg SMTP
+	// AUTH credentials (from Pool.Auth): the probe ladder's SMTP AUTH exchange
+	// needs the same credentials the traffic path uses, and CheckParams is all
+	// internal/health ever sees of a pool. Empty when pool auth is nil.
+	AuthUsername string
+	AuthPassword string
+
 	rng hcl.Range
 	// fieldRanges anchors level/port/interval/down_interval/timeout/
 	// rise/fall at their own attribute, the way Timeouts.fieldRanges

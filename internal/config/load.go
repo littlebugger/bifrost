@@ -82,6 +82,25 @@ func resolveBackendCAs(cfg *Config) hcl.Diagnostics {
 			pool.Servers[j].Check.CAPool = certPool
 		}
 	}
+
+	// resolvePoolAuth copies every pool's backend-leg SMTP AUTH credentials
+	// into that pool's health check parameters, the same way resolveBackendCAs
+	// copies the TLS CA pool. Both the relay path (internal/proxy) and the
+	// health prober (internal/health) need the same credentials, and
+	// CheckParams is all internal/health ever sees of a pool.
+	for i := range cfg.Pools {
+		pool := &cfg.Pools[i]
+		if pool.Auth == nil {
+			continue
+		}
+		pool.Check.AuthUsername = pool.Auth.Username
+		pool.Check.AuthPassword = pool.Auth.Password
+		for j := range pool.Servers {
+			pool.Servers[j].Check.AuthUsername = pool.Auth.Username
+			pool.Servers[j].Check.AuthPassword = pool.Auth.Password
+		}
+	}
+
 	return diags
 }
 
