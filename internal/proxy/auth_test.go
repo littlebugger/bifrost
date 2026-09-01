@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/littlebugger/bifrost/internal/config"
@@ -136,4 +137,21 @@ func TestVerifyPlain(t *testing.T) {
 			}
 		})
 	}
+
+	// Hash case-insensitivity: config load normalizes hashes to lowercase (see
+	// internal/config/load.go), so verifyPlain does literal byte comparison and
+	// rejects uppercase hashes. This test documents that invariant.
+	t.Run("uppercase hash rejected", func(t *testing.T) {
+		correctHash := testAuthUser("dave", "s1", "secret").HashedPassword
+		uppercaseHash := strings.ToUpper(correctHash)
+		badUser := config.AuthUser{
+			Name:           "dave",
+			Salt:           "s1",
+			HashedPassword: uppercaseHash,
+		}
+		got := verifyPlain([]config.AuthUser{badUser}, "dave", "secret")
+		if got {
+			t.Errorf("verifyPlain with uppercase hash = true, want false")
+		}
+	})
 }
