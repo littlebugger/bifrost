@@ -159,8 +159,10 @@ func Dial(ctx context.Context, srv *config.Server, opts Opts) (*Conn, error) {
 		// credentials must never reach the wire before a TLS upgrade.
 		if opts.TLSMode == "" || opts.TLSMode == "none" {
 			_ = c.conn.Close()
-			return nil, &HandshakeError{Addr: c.addr, Stage: "auth",
-				Err: fmt.Errorf("refusing to send AUTH PLAIN over a connection that was not TLS-upgraded (tls %q)", opts.TLSMode)}
+			return nil, &HandshakeError{
+				Addr: c.addr, Stage: "auth",
+				Err: fmt.Errorf("refusing to send AUTH PLAIN over a connection that was not TLS-upgraded (tls %q)", opts.TLSMode),
+			}
 		}
 		if !c.caps.HasAuthPlain() {
 			_ = c.conn.Close()
