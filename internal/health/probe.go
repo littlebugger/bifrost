@@ -202,6 +202,8 @@ func probeDeep(ctx context.Context, addr string, params config.CheckParams, requ
 func dialForHandshake(ctx context.Context, addr string, params config.CheckParams, requiredCaps []string) (*backend.Conn, error) {
 	opts := backend.Opts{
 		EhloName:     params.EhloName,
+		AuthUsername: params.AuthUsername,
+		AuthPassword: params.AuthPassword,
 		TLSMode:      params.TLS,
 		RequiredCaps: requiredCaps,
 		Timeouts:     probeTimeouts(params.Timeout),
@@ -217,9 +219,17 @@ func dialForHandshake(ctx context.Context, addr string, params config.CheckParam
 }
 
 // handshakeFailure classifies a backend.Dial error into a probeResult:
+// AuthError is classified by permanence (5xx → incompatible, 4xx → failure);
 // IncompatibleError is a successful (op-wise) probe with the capability
 // verdict set; anything else is a plain probe failure.
 func handshakeFailure(err error) probeResult {
+	var aerr *backend.AuthError
+	if errors.As(err, &aerr) {
+		if aerr.Permanent() {
+			return probeResult{ok: true, incompatible: true, reason: "auth: " + err.Error()}
+		}
+		return probeResult{reason: "auth: " + err.Error()}
+	}
 	var incompat *backend.IncompatibleError
 	if errors.As(err, &incompat) {
 		return probeResult{ok: true, incompatible: true, reason: "incompatible: " + err.Error()}
