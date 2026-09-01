@@ -91,6 +91,9 @@ func (t *txn) attachAndRelay(ctx context.Context, lines [][]byte) {
 			t.srv, t.c, t.release = srv, c, release
 			t.r.trackLeg(c)
 			t.record.pool, t.record.server = pool.Name, srv.Name
+			// A fresh dial is always this conn's first envelope; a reused
+			// conn (Task 4) sets a higher ordinal here instead.
+			t.record.connEnvelope = 1
 			t.cw.reset()
 			left, err := t.relayBatch(lines)
 			if err == nil {
@@ -306,5 +309,87 @@ func (t *txn) detach(clean bool) {
 	if t.release != nil {
 		t.release()
 	}
+	t.c, t.srv, t.release = nil, nil, nil
+}
+
+// backendAffinity is a session's one reuse slot: a backend leg a prior
+// transaction on the session finished cleanly and handed back instead of
+// closing, held at a command boundary for the session's next envelope to
+// pick back up (Task 4 reads it; this task only ever writes it). One
+// slot, one session, and every access happens on the session goroutine —
+// the same goroutine that runs every transaction on it — so it needs no
+// lock of its own.
+type backendAffinity struct {
+	c         *backend.Conn
+	srv       *config.Server // pointer identity is the reuse key, poolFor's own rule
+	envelopes int            // envelopes this conn has carried so far
+}
+
+// closeIfAny closes a stashed conn, if there is one, and clears the slot.
+// Nil-safe: a session that never stashed anything pays nothing for this.
+//
+// It is always an Abort, never a Quit: RFC 5321 3.8 governs a mid-message
+// disconnect, and a stashed conn is never that — it is only ever stashed
+// at a command boundary (a clean DATA verdict or a relayed RSET), so a
+// bare close is exactly as safe here as at any other command-boundary
+// teardown, and there is no backend left to wait out a polite QUIT
+// round-trip for.
+func (a *backendAffinity) closeIfAny() {
+	if a.c == nil {
+		return
+	}
+	a.c.Abort()
+	a.c, a.srv, a.envelopes = nil, nil, 0
+}
+
+// detachOrStash is the clean-detach decision at the two sites where a leg
+// finished its envelope with nothing pending (the delivered DATA verdict,
+// a relayed RSET): stash it onto the session's affinity slot instead of
+// closing it, when the live pool still allows another envelope on this
+// conn. Every other case — no conn, a broken leg, reuse disabled or
+// unresolvable, or the cap reached — falls back to today's plain
+// detach(true), the cap additionally counting a "capped" reuse event.
+func (t *txn) detachOrStash() {
+	pool := poolFor(t.cfg, t.srv)
+	if t.c == nil || t.broken || pool == nil || pool.ReuseEnvelopes <= 1 {
+		t.detach(true)
+		return
+	}
+	k := t.record.connEnvelope
+	if k < pool.ReuseEnvelopes {
+		t.stash()
+		return
+	}
+	if k == pool.ReuseEnvelopes {
+		t.r.metrics.BackendReuse(srvName(t.srv), "capped")
+	}
+	t.detach(true)
+}
+
+// stash disowns the leg from this transaction and hands it to the
+// session's affinity slot instead of closing it: untracked from the
+// Relay's leg registry, its lease released, and a Success signal exactly
+// as a clean detach reports (the leg behaved, whatever this envelope's
+// verdict was) — but the connection itself lives on for the session's
+// next envelope instead of being QUIT. t.c/srv/release are cleared same
+// as detach, so HandleTransaction's deferred detach(false) no-ops after
+// this runs.
+//
+// closeIfAny first: until Task 4 makes attachAndRelay consume the slot,
+// every envelope still dials fresh, so a session's second stash in a row
+// would otherwise overwrite the first one's fields and leak that
+// connection (no reader ever learns it should close). Harmless once Task
+// 4 lands too — a slot that was already drained before this envelope
+// attached is empty, so this is then always a no-op.
+func (t *txn) stash() {
+	t.r.untrackLeg(t.c)
+	t.r.sig.Success(t.srv)
+	if t.release != nil {
+		t.release()
+	}
+	t.tx.affinity.closeIfAny()
+	t.tx.affinity.c = t.c
+	t.tx.affinity.srv = t.srv
+	t.tx.affinity.envelopes = t.record.connEnvelope
 	t.c, t.srv, t.release = nil, nil, nil
 }

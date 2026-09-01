@@ -399,3 +399,125 @@ func TestRelayBackendAuth(t *testing.T) {
 		"RCPT TO:<one@c.example>\r\n",
 	)
 }
+
+// sendOneEnvelope drives one full MAIL..DATA envelope to completion over
+// f, asserting the client sees today's happy-path replies. Shared by the
+// reuse tests below, which only differ in what they check afterward.
+//
+// The trailing NOOP round-trip is TestDetachAfterVerdict's own technique:
+// the verdict reaches the client from the reply-pump goroutine before
+// detachOrStash/detach necessarily runs on the txn goroutine (R4's
+// ordering), so a caller that checked backend-side state (a QUIT sent, a
+// dial count) right after the verdict would be racing it. NOOP is
+// answered from the same goroutine, sequentially after detach — one
+// round trip with the session proves detach has already run.
+func sendOneEnvelope(f *relayFixture, from string) {
+	f.send("MAIL FROM:<" + from + "@b.example>")
+	f.expect("250 2.1.0 OK")
+	f.send("RCPT TO:<c@d.example>")
+	f.expect("250 2.1.5 OK")
+	f.send("DATA")
+	f.expect("354 Start mail input; end with <CRLF>.<CRLF>")
+	f.raw("body " + from + "\r\n.\r\n")
+	f.expect("250 2.0.0 OK: queued")
+	f.send("NOOP")
+	f.expect("250 2.0.0 OK")
+}
+
+// TestReuseStashKeepsConnOpen is task-3 scenario 1: a pool with
+// reuse_envelopes > 1 stashes a leg that finished its envelope cleanly
+// instead of QUITing it. Reuse itself (picking the stashed leg back up
+// for the session's next envelope) is Task 4 — here only the stash side
+// is observable: no QUIT went out, and nothing dialed again.
+func TestReuseStashKeepsConnOpen(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 2
+	f := newRelayClient(t, cfg)
+
+	sendOneEnvelope(f, "one")
+
+	if got := srv.DialCount(); got != 1 {
+		t.Errorf("DialCount = %d, want 1: the leg is stashed, not re-dialed", got)
+	}
+	if got := srv.CmdCount("QUIT"); got != 0 {
+		t.Errorf("backend QUIT count = %d, want 0: a stashed leg is not QUIT", got)
+	}
+}
+
+// TestReuseSessionEndClosesStashedConn is task-3 scenario 2: a leg
+// stashed on the session's affinity slot must not outlive the session.
+// The fake sets no read deadline of its own on an accepted connection
+// (see fakesmtp's TestStopRacesSetUp), so Stop's wg.Wait hangs forever on
+// a per-connection goroutine still blocked reading a leg Bifrost never
+// closed — a bounded wait turns a leaked leg into a clean failure instead
+// of stalling the suite, the same technique fakesmtp's own tests use to
+// prove a connection was actually closed.
+func TestReuseSessionEndClosesStashedConn(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 2
+	f := newRelayClient(t, cfg)
+
+	sendOneEnvelope(f, "one")
+
+	f.send("QUIT")
+	f.expect("221 2.0.0 Bye")
+	f.expectClosed()
+
+	done := make(chan struct{})
+	go func() { srv.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stashed backend leg was not closed on session end")
+	}
+}
+
+// TestReuseEnvelopesZeroRegression pins today's behavior when reuse is
+// not configured (the zero value, disabled): the leg is politely QUIT
+// after a clean verdict exactly as before this task.
+func TestReuseEnvelopesZeroRegression(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	f := newRelayClient(t, relayConfig(srv.Addr())) // ReuseEnvelopes: 0
+
+	sendOneEnvelope(f, "one")
+
+	if got := srv.CmdCount("QUIT"); got != 1 {
+		t.Errorf("backend QUIT count = %d, want 1: reuse_envelopes=0 keeps today's polite close", got)
+	}
+}
+
+// TestReuseSecondStashDoesNotLeakFirst guards a gap Task 4 (not yet
+// implemented) will eventually close: until attachAndRelay itself learns
+// to consume the session's affinity slot, every envelope still dials
+// fresh, so a session with two clean envelopes in a row stashes twice.
+// The second stash must not silently orphan the first connection —
+// Server.Stop below hangs forever on a leaked leg (fakesmtp sets no read
+// deadline), which is exactly what makes it a real regression check and
+// not a vacuous one.
+func TestReuseSecondStashDoesNotLeakFirst(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 2
+	f := newRelayClient(t, cfg)
+
+	sendOneEnvelope(f, "one")
+	sendOneEnvelope(f, "two")
+
+	if got := srv.DialCount(); got != 2 {
+		t.Fatalf("DialCount = %d, want 2: no reuse-consumption yet (Task 4), so each envelope dials fresh", got)
+	}
+
+	f.send("QUIT")
+	f.expect("221 2.0.0 Bye")
+	f.expectClosed()
+
+	done := make(chan struct{})
+	go func() { srv.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first stashed leg was never closed: the second stash leaked it")
+	}
+}

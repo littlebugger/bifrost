@@ -95,6 +95,14 @@ type Txn struct {
 	// deferred is a command line the handler read but deliberately did
 	// not answer; see leaveForSession.
 	deferred []byte
+
+	// affinity points at the owning Session's one reuse slot (attach.go's
+	// backendAffinity): set in mail() so a TxnHandler can stash a leg
+	// that finished its envelope cleanly instead of closing it. nil for a
+	// hand-built Txn outside a real session (tests), in which case
+	// detachOrStash's stash path is simply never reached (no reuse pool
+	// configured).
+	affinity *backendAffinity
 }
 
 // leaveForSession hands one already-read command line back to the
@@ -167,6 +175,13 @@ type Session struct {
 	authed    bool
 	authnID   string
 	authFails int
+
+	// affinity is this session's one backend-reuse slot (attach.go): a
+	// leg a transaction stashed instead of closing, handed to every Txn
+	// this session opens (see mail) so a TxnHandler can read or fill it.
+	// It lives and dies with the session (Run's defer), never crossing to
+	// another client connection.
+	affinity backendAffinity
 }
 
 // NewSession wraps an accepted client connection. tlsCfg carries the
@@ -197,6 +212,11 @@ func NewSession(conn net.Conn, cfg *config.Config, tlsCfg *tls.Config, h TxnHand
 // when the connection failed in a way the session could not answer.
 func (s *Session) Run(ctx context.Context) error {
 	defer func() { _ = s.conn.Close() }()
+	// A cached leg is only ever stashed at a command boundary (never
+	// mid-message — see backendAffinity.closeIfAny), so it is never in
+	// the drain-sensitive state CloseLegs exists for; it just needs to
+	// not outlive the session that cached it.
+	defer s.affinity.closeIfAny()
 
 	if d := s.timeouts().SessionMax; d > 0 {
 		s.expiry = time.Now().Add(d)
@@ -350,6 +370,7 @@ func (s *Session) mail(ctx context.Context, raw []byte) (stop bool, err error) {
 		R:         s.br,
 		W:         s.bw,
 		conn:      s.conn,
+		affinity:  &s.affinity,
 	}
 	s.h.HandleTransaction(ctx, tx)
 	// The handler is expected to flush its own replies; flushing again
