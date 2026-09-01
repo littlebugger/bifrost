@@ -43,6 +43,11 @@ type Metrics interface {
 	// backend died after the final dot but before a verdict
 	// (bifrost_duplicate_risk_total).
 	DuplicateRisk()
+
+	// BackendReuse reports one backend connection reuse: outcome is one
+	// of "reused" (connection was reused) or "capped" (reuse limit reached)
+	// (bifrost_backend_conn_reuse_total).
+	BackendReuse(server string, outcome string)
 }
 
 // Byte-relay direction labels (bifrost_relay_bytes_total{direction}).
@@ -62,6 +67,7 @@ func (noMetrics) Transaction(string, string, string) {}
 func (noMetrics) SynthesizedReply(string)            {}
 func (noMetrics) RelayBytes(string, int)             {}
 func (noMetrics) DuplicateRisk()                     {}
+func (noMetrics) BackendReuse(string, string)        {}
 
 // firstMetrics returns overrides[0], or noMetrics{} if empty — the
 // optional-trailing-argument shape NewRelay/Serve use so every pre-
