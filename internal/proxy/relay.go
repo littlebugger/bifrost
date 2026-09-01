@@ -162,6 +162,7 @@ func (r *Relay) HandleTransaction(ctx context.Context, tx *Txn) {
 	t := &txn{r: r, tx: tx, cfg: r.cfg.Load()}
 	t.cw = &clientWriter{tx: tx, idle: t.timeouts().ClientIdle, metrics: r.metrics}
 	t.record.start = time.Now()
+	t.record.authn = tx.Authn
 	defer t.emitLog()
 	defer t.detach(false)
 	t.run(ctx)

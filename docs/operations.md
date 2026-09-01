@@ -430,6 +430,16 @@ PROJECT.md's "No AUTH passthrough" paragraph for why the two never mix
 one client's AUTH to N backends was never coherent — this feature is
 local termination, not relay).
 
+The two legs also differ on reload: a `listener.auth` edit (a revoked
+user, a rotated hash) needs a **restart** to take effect — each `Session`
+captures the listener's auth store once, at accept, so `POST /reload` /
+`SIGHUP` warns `listener auth changed: restart required to apply` rather
+than silently leaving sessions on the old store (`RestartRequired`,
+`internal/config/holder.go`). A `pool.auth` edit is **reload-live**: both
+the relay and the health prober re-read credentials off the config
+holder on every transaction/probe, so a rotated backend password applies
+at the next `MAIL`, no restart needed.
+
 ### Client leg: `listener.auth`
 
 ```hcl

@@ -61,6 +61,11 @@ type Txn struct {
 	// verbatim.
 	Helo string
 
+	// Authn is the authcid the client authenticated as (RFC 4954, see
+	// auth.go), or "" if the session never authenticated. Set once, at
+	// mail(), from Session.authnID.
+	Authn string
+
 	// PipelineQ is this transaction's command batch in wire order:
 	// element 0 is the MAIL line that opened it, followed by the
 	// consecutive RCPTs and at most one DATA the client had already
@@ -339,6 +344,7 @@ func (s *Session) mail(ctx context.Context, raw []byte) (stop bool, err error) {
 	tx := &Txn{
 		ClientIP:  s.clientIP,
 		Helo:      s.helo,
+		Authn:     s.authnID,
 		PipelineQ: q,
 		Expiry:    s.expiry,
 		R:         s.br,

@@ -20,6 +20,8 @@ import (
 type txnRecord struct {
 	start time.Time
 
+	authn string // the authcid from Txn.Authn, "" if the session never authenticated (RFC 4954, see auth.go)
+
 	pool, server string // the last-attached candidate, if any
 
 	mailVerdict int // the MAIL command's own reply code; 0 = none yet
@@ -101,6 +103,7 @@ func (t *txn) emitLog() {
 	t.r.lg.Info("transaction",
 		"client", t.tx.ClientIP.String(),
 		"helo", t.tx.Helo,
+		"authn", r.authn,
 		"pool", r.pool,
 		"server", r.server,
 		"mail_verdict", r.mailVerdict,
