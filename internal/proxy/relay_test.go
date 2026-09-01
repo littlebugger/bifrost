@@ -362,3 +362,32 @@ func TestBackendBannerNotLeaked(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayBackendAuth(t *testing.T) {
+	// The relay sends AUTH PLAIN with pool credentials after handshake,
+	// before relaying MAIL.
+	srv := relayFake(t, fakesmtp.Script{
+		Caps: append(backendCaps(), "AUTH PLAIN"),
+	})
+
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].Auth = &config.PoolAuth{
+		Username: "u",
+		Password: "p",
+	}
+
+	f := newRelayClient(t, cfg)
+	f.send("MAIL FROM:<a@b.example>")
+	f.expect("250 2.1.0 OK")
+	f.send("RCPT TO:<one@c.example>")
+	f.expect("250 2.1.5 OK")
+
+	// The backend's transcript must contain AUTH PLAIN with base64-encoded
+	// credentials before the relayed MAIL line. The exact encoding of
+	// "\x00u\x00p" is "AHUAcA==".
+	wantLines(t, srv, 0,
+		"AUTH PLAIN AHUAcA==\r\n",
+		"MAIL FROM:<a@b.example>\r\n",
+		"RCPT TO:<one@c.example>\r\n",
+	)
+}
