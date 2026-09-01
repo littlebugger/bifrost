@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -251,7 +252,26 @@ func (r *rawListener) convert() (Listener, hcl.Diagnostics) {
 			rng:        r.StartTLS.Range,
 		}
 	}
+	if r.Auth != nil {
+		l.Auth = r.Auth.convert()
+	}
 	return l, nil
+}
+
+// convert maps a decoded listener auth block to its resolved form,
+// lowercasing HashedPassword so every later comparison is a plain byte
+// match against a fixed-case hex string.
+func (r *rawListenerAuth) convert() *ListenerAuth {
+	la := &ListenerAuth{rng: r.Range}
+	for _, u := range r.Users {
+		la.Users = append(la.Users, AuthUser{
+			Name:           u.Name,
+			Salt:           u.Salt,
+			HashedPassword: strings.ToLower(u.HashedPassword),
+			rng:            u.Range,
+		})
+	}
+	return la
 }
 
 func (r *rawServer) convert() (Server, hcl.Diagnostics) {
@@ -294,6 +314,9 @@ func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 		s, sd := rs.convert()
 		diags = append(diags, sd...)
 		p.Servers = append(p.Servers, s)
+	}
+	if r.Auth != nil {
+		p.Auth = &PoolAuth{Username: r.Auth.Username, Password: r.Auth.Password, rng: r.Auth.Range}
 	}
 	return p, diags
 }

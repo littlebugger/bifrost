@@ -102,7 +102,8 @@ type CheckParams struct {
 type Listener struct {
 	Bind     string
 	Hostname string
-	StartTLS *StartTLS // nil: STARTTLS not advertised
+	StartTLS *StartTLS     // nil: STARTTLS not advertised
+	Auth     *ListenerAuth // nil: client-leg SMTP AUTH disabled
 
 	// Capabilities is the advertised EHLO set, resolved: the built-in
 	// default when the block omitted it, plus STARTTLS whenever a
@@ -126,6 +127,38 @@ type StartTLS struct {
 	rng hcl.Range
 }
 
+// ListenerAuth configures client-leg SMTP AUTH: the set of users allowed
+// to authenticate against this listener, each checked against a
+// salted-SHA256 hash (never a plaintext password) rather than the
+// backend-leg plaintext of PoolAuth.
+type ListenerAuth struct {
+	Users []AuthUser
+
+	rng hcl.Range
+}
+
+// AuthUser is one client-leg SMTP AUTH credential. HashedPassword is
+// lowercase hex SHA256(salt + password), normalized to lowercase at load
+// so comparison never has to case-fold it again.
+type AuthUser struct {
+	Name           string
+	Salt           string
+	HashedPassword string
+
+	rng hcl.Range
+}
+
+// PoolAuth configures backend-leg SMTP AUTH: the plaintext credentials
+// Bifrost presents to every server in the pool. Plaintext, unlike
+// ListenerAuth's hash, because it must be replayed verbatim in the
+// backend's own AUTH exchange.
+type PoolAuth struct {
+	Username string
+	Password string
+
+	rng hcl.Range
+}
+
 // Pool is a named group of weighted backend servers.
 type Pool struct {
 	Name                 string
@@ -137,6 +170,7 @@ type Pool struct {
 	MaxTransactions      int    // pool-level default for servers' max_transactions
 	Check                CheckParams
 	Servers              []Server
+	Auth                 *PoolAuth // nil: backend-leg SMTP AUTH disabled
 
 	// CAPool is BackendTLSCA parsed exactly once per config load (see
 	// resolveBackendCAs): both consumers of a pool's backend-leg TLS —

@@ -96,12 +96,38 @@ type rawStartTLS struct {
 type rawListener struct {
 	Range hcl.Range `hcl:",def_range"`
 
-	Bind              string       `hcl:"bind"`
-	Hostname          string       `hcl:"hostname"`
-	HostnameRange     hcl.Range    `hcl:"hostname,attr_range"`
-	StartTLS          *rawStartTLS `hcl:"starttls,block"`
-	Capabilities      []string     `hcl:"capabilities,optional"`
-	CapabilitiesRange hcl.Range    `hcl:"capabilities,attr_range"`
+	Bind              string           `hcl:"bind"`
+	Hostname          string           `hcl:"hostname"`
+	HostnameRange     hcl.Range        `hcl:"hostname,attr_range"`
+	StartTLS          *rawStartTLS     `hcl:"starttls,block"`
+	Capabilities      []string         `hcl:"capabilities,optional"`
+	CapabilitiesRange hcl.Range        `hcl:"capabilities,attr_range"`
+	Auth              *rawListenerAuth `hcl:"auth,block"`
+}
+
+// rawListenerAuth is the listener's client-leg SMTP AUTH block: a set of
+// users, each checked against a salted-SHA256 hash (see AuthUser).
+type rawListenerAuth struct {
+	Range hcl.Range `hcl:",def_range"`
+
+	Users []rawAuthUser `hcl:"user,block"`
+}
+
+type rawAuthUser struct {
+	Name  string    `hcl:",label"`
+	Range hcl.Range `hcl:",def_range"`
+
+	Salt           string `hcl:"salt"`
+	HashedPassword string `hcl:"hashed_password"`
+}
+
+// rawPoolAuth is the pool's backend-leg SMTP AUTH block: the plaintext
+// credentials Bifrost presents to every server in the pool.
+type rawPoolAuth struct {
+	Range hcl.Range `hcl:",def_range"`
+
+	Username string `hcl:"username"`
+	Password string `hcl:"password"`
 }
 
 type rawServer struct {
@@ -121,16 +147,17 @@ type rawPool struct {
 	Name  string    `hcl:",label"`
 	Range hcl.Range `hcl:",def_range"`
 
-	Balance              string      `hcl:"balance"`
-	BackendTLS           string      `hcl:"backend_tls,optional"`
-	BackendTLSServerName string      `hcl:"backend_tls_server_name,optional"`
-	BackendTLSCA         string      `hcl:"backend_tls_ca,optional"`
-	BackendTLSCARange    hcl.Range   `hcl:"backend_tls_ca,attr_range"`
-	EhloName             string      `hcl:"ehlo_name,optional"`
-	MaxTransactions      *int        `hcl:"max_transactions"`
-	MaxTransactionsRange hcl.Range   `hcl:"max_transactions,attr_range"`
-	Check                *rawCheck   `hcl:"check,block"`
-	Servers              []rawServer `hcl:"server,block"`
+	Balance              string       `hcl:"balance"`
+	BackendTLS           string       `hcl:"backend_tls,optional"`
+	BackendTLSServerName string       `hcl:"backend_tls_server_name,optional"`
+	BackendTLSCA         string       `hcl:"backend_tls_ca,optional"`
+	BackendTLSCARange    hcl.Range    `hcl:"backend_tls_ca,attr_range"`
+	EhloName             string       `hcl:"ehlo_name,optional"`
+	MaxTransactions      *int         `hcl:"max_transactions"`
+	MaxTransactionsRange hcl.Range    `hcl:"max_transactions,attr_range"`
+	Check                *rawCheck    `hcl:"check,block"`
+	Servers              []rawServer  `hcl:"server,block"`
+	Auth                 *rawPoolAuth `hcl:"auth,block"`
 }
 
 type rawRule struct {
