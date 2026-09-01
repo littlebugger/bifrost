@@ -2,13 +2,16 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/smtpwire"
 )
 
 // parsePlain decodes a PLAIN initial-response/continuation payload
@@ -41,4 +44,78 @@ func verifyPlain(users []config.AuthUser, authcid, password string) bool {
 	sum := sha256.Sum256([]byte(match.Salt + password))
 	got := hex.EncodeToString(sum[:])
 	return subtle.ConstantTimeCompare([]byte(got), []byte(match.HashedPassword))&found == 1
+}
+
+// auth answers AUTH (RFC 4954). It is local termination only: bifrost
+// verifies the client itself and never relays anything AUTH-related to a
+// backend. PLAIN (RFC 4616) is the only mechanism, and only over TLS —
+// strict, so it never runs in cleartext regardless of what the client
+// negotiated capabilities imply.
+func (s *Session) auth(ctx context.Context, args []byte) (stop bool, err error) {
+	if s.cfg.Listener.Auth == nil {
+		return false, s.write(RplNotImplemented) // decision D6 unchanged when not configured
+	}
+	if !s.greeted || s.authed {
+		return false, s.write(RplBadSequence)
+	}
+	if !s.tlsActive {
+		return false, s.write(RplAuthEncryption) // strict: PLAIN never in cleartext
+	}
+
+	mech, initial, _ := bytes.Cut(bytes.TrimSpace(args), []byte(" "))
+	if !strings.EqualFold(string(mech), "PLAIN") {
+		return false, s.write(RplAuthMechanism)
+	}
+
+	if len(initial) == 0 {
+		if err := s.write(RplAuthContinue); err != nil {
+			return false, err
+		}
+		if err := s.armDeadline(); err != nil {
+			return false, err
+		}
+		line, rerr := smtpwire.ReadCommandLine(s.br, maxCommandLine)
+		if rerr != nil {
+			return s.authReadError(rerr)
+		}
+		initial = bytes.TrimRight(line, "\r\n")
+		if string(initial) == "*" {
+			return false, s.write(RplAuthCancelled)
+		}
+	}
+
+	authzid, authcid, password, ok := parsePlain(initial)
+	if !ok {
+		return false, s.write(RplAuthMalformed)
+	}
+	if !verifyPlain(s.cfg.Listener.Auth.Users, authcid, password) {
+		s.authFails++
+		s.lg.Warn("client auth failed", "client", s.clientIP, "authcid", authcid)
+		if s.authFails >= 3 {
+			return true, s.goodbye(RplAuthTooMany)
+		}
+		return false, s.write(RplAuthFailed)
+	}
+	if authzid != "" {
+		s.lg.Info("authzid ignored", "client", s.clientIP, "authzid", authzid)
+	}
+	s.authed, s.authnID = true, authcid
+	s.lg.Info("client authenticated", "client", s.clientIP, "authn", authcid)
+	return false, s.write(RplAuthOK)
+}
+
+// authReadError turns a failed read of an AUTH continuation line into a
+// reply: the two in-sync command violations (bare LF, over-long) are the
+// same client mistake here they are anywhere else in the protocol — just
+// an invalid response to the challenge, not answered any differently —
+// and the session stays open. Anything else (a timeout, the client
+// hanging up) is not a violation of the AUTH exchange specifically, so
+// it defers to the session's own read-error rules.
+func (s *Session) authReadError(err error) (stop bool, _ error) {
+	switch {
+	case errors.Is(err, smtpwire.ErrBareLF), errors.Is(err, smtpwire.ErrLineTooLong):
+		return false, s.write(RplAuthMalformed)
+	default:
+		return s.handleReadError(err)
+	}
 }

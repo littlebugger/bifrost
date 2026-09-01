@@ -155,6 +155,13 @@ type Session struct {
 	tlsActive bool
 	mailSeen  bool      // a transaction has been attempted on this session
 	expiry    time.Time // session-lifetime deadline; zero = unlimited
+
+	// AUTH (RFC 4954), client leg only. authed and authnID, once set,
+	// live for the rest of the connection (see reset). authFails counts
+	// failed attempts on this connection; the third closes it.
+	authed    bool
+	authnID   string
+	authFails int
 }
 
 // NewSession wraps an accepted client connection. tlsCfg carries the
@@ -283,6 +290,8 @@ func (s *Session) dispatch(ctx context.Context, raw []byte) (stop bool, err erro
 		return false, s.write(RplEhlo(s.hostname(), s.capabilities()))
 	case "STARTTLS":
 		return s.startTLS(args)
+	case "AUTH":
+		return s.auth(ctx, args)
 	case "MAIL":
 		return s.mail(ctx, raw)
 	case "RCPT", "DATA":
@@ -301,7 +310,7 @@ func (s *Session) dispatch(ctx context.Context, raw []byte) (stop bool, err erro
 		return false, s.write(RplHelp)
 	case "QUIT":
 		return true, s.write(RplBye)
-	case "EXPN", "AUTH", "BDAT":
+	case "EXPN", "BDAT":
 		// Not advertised, not supported in v1 (decision D6).
 		return false, s.write(RplNotImplemented)
 	default:
@@ -315,6 +324,9 @@ func (s *Session) dispatch(ctx context.Context, raw []byte) (stop bool, err erro
 func (s *Session) mail(ctx context.Context, raw []byte) (stop bool, err error) {
 	if !s.greeted {
 		return false, s.write(RplBadSequence)
+	}
+	if s.cfg.Listener.Auth != nil && !s.authed {
+		return false, s.write(RplAuthRequired)
 	}
 
 	q, err := s.collectBatch(raw)
@@ -512,6 +524,13 @@ func (s *Session) handleReadError(err error) (stop bool, _ error) {
 // reset clears everything an EHLO/HELO resets (RFC 5321 4.1.4): the
 // greeting and the session's transaction history. STARTTLS resets the
 // same state (RFC 3207).
+//
+// authed (and authnID) deliberately do NOT reset here: RFC 4954 scopes
+// AUTH to the connection, not to the EHLO/RSET-bounded "session" within
+// it, and there is no TLS downgrade path an EHLO could be used to walk
+// back through to re-open a cleartext hole — so there is nothing a
+// forced re-auth would buy that clearing it would not just cost the
+// client a redundant round trip for.
 func (s *Session) reset() {
 	s.greeted, s.helo, s.mailSeen = false, "", false
 }
@@ -545,6 +564,13 @@ func (s *Session) capabilities() []string {
 		if !strings.EqualFold(strings.TrimSpace(c), "STARTTLS") {
 			out = append(out, c)
 		}
+	}
+	// AUTH is post-TLS only (RFC 4954 strict-PLAIN, decision above): it
+	// never appears on the tlsOffered() early-return path above, only
+	// once TLS is actually active, and only until the client has
+	// authenticated.
+	if s.cfg.Listener.Auth != nil && s.tlsActive && !s.authed {
+		out = append(out, "AUTH PLAIN")
 	}
 	return out
 }
