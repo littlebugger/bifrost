@@ -102,3 +102,20 @@ comment that cites it; note the leastconn/idle-conn caveat. operations.md:
 knob semantics, the no-idle-reaper ceiling (backend idle timeouts
 self-heal via RSET revalidation), metrics. examples/bifrost.hcl: commented
 `reuse_envelopes` line.
+
+## Amendment (2026-09-01, user request): allow_cleartext on both auth legs
+
+`allow_cleartext = true` (default false) is accepted inside BOTH auth
+blocks, for links secured at the network layer (in-cluster k8s):
+
+- `pool.auth`: lifts the three backend-leg guards for that pool — the
+  "pool auth requires backend TLS" validation error, the "pool auth
+  requires TLS probes" validation error, and backend.Dial's refusal to
+  send AUTH PLAIN on a non-TLS-upgraded connection.
+- `listener.auth`: lifts the "client auth requires starttls" validation
+  error; AUTH PLAIN is then advertised and accepted on plaintext
+  sessions (the 538 gate applies only when the knob is off).
+
+The default stays strict: backend_tls defaults to "none", so a silent
+allow would leak credentials on a forgotten backend_tls line. The knob
+must appear in the config file where an auditor will see it.

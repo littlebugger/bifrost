@@ -17,7 +17,7 @@
 - Commit messages: plain `type: subject` (hook rejects `type(scope):`).
 - All work on branch `feat/backend-reuse`.
 - After each task the named package tests pass; Tasks 5–6 run `go test ./...`.
-- `gofmt` clean; comments match surrounding style; cite RFC 5321 3.8 where abort semantics matter.
+- `gofumpt -l .` clean (CI's make lint uses gofumpt — plain gofmt is NOT sufficient); comments match surrounding style; cite RFC 5321 3.8 where abort semantics matter.
 - Per-transaction balancing (R3) must be untouched: a pick happens for every MAIL; reuse only when it lands on the cached server.
 
 ---
@@ -32,11 +32,11 @@
 **Interfaces:**
 - Produces: `Pool.ReuseEnvelopes int` (HCL `reuse_envelopes`, optional, default 0). Validation: negative → error summary `"reuse_envelopes out of range"`. 0 and 1 are valid (= disabled).
 
-- [ ] **Step 1: Failing tests** — extend an existing auth/pool fixture load test (add `reuse_envelopes = 50` to `testdata/auth.hcl`'s pool and assert `Pool.ReuseEnvelopes == 50`); validate_test row for `bad-reuse-negative.hcl` (a minimal valid pool + `reuse_envelopes = -1`) expecting `"reuse_envelopes out of range"`.
-- [ ] **Step 2: Verify RED** — `go test ./internal/config/ -run 'TestLoadAuth|TestValidateDiagnostics' -v` (unknown attribute → strict-decode failure).
-- [ ] **Step 3: Implement** — rawPool gains `ReuseEnvelopes *int \`hcl:"reuse_envelopes,optional"\`` (mirror how other optional pool ints are declared — read how `max_transactions` flows raw→resolved and copy that idiom, range capture included); validate rule beside the weight/max_transactions numeric checks.
-- [ ] **Step 4: GREEN** — `go test ./internal/config/ -v`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: add reuse_envelopes pool knob"`
+- [x] **Step 1: Failing tests** — extend an existing auth/pool fixture load test (add `reuse_envelopes = 50` to `testdata/auth.hcl`'s pool and assert `Pool.ReuseEnvelopes == 50`); validate_test row for `bad-reuse-negative.hcl` (a minimal valid pool + `reuse_envelopes = -1`) expecting `"reuse_envelopes out of range"`.
+- [x] **Step 2: Verify RED** — `go test ./internal/config/ -run 'TestLoadAuth|TestValidateDiagnostics' -v` (unknown attribute → strict-decode failure).
+- [x] **Step 3: Implement** — rawPool gains `ReuseEnvelopes *int \`hcl:"reuse_envelopes,optional"\`` (mirror how other optional pool ints are declared — read how `max_transactions` flows raw→resolved and copy that idiom, range capture included); validate rule beside the weight/max_transactions numeric checks.
+- [x] **Step 4: GREEN** — `go test ./internal/config/ -v`.
+- [x] **Step 5: Commit** — `git commit -am "feat: add reuse_envelopes pool knob"`
 
 ### Task 2: Reuse metrics
 
@@ -47,11 +47,11 @@
 **Interfaces:**
 - Produces: interface method `BackendReuse(server string, outcome string)`; prometheus counter `bifrost_backend_conn_reuse_total{server, outcome}`, outcome ∈ `"reused"` | `"capped"`; `noMetrics` no-op.
 
-- [ ] **Step 1: Failing test** — metrics package: call `BackendReuse("s1", "reused")` twice and `("s1", "capped")` once, assert counter values via the registry the way the existing BackendDial test does.
-- [ ] **Step 2: Verify RED** — method undefined.
-- [ ] **Step 3: Implement** — one CounterVec, two label values; wire into the interface + noMetrics.
-- [ ] **Step 4: GREEN** — `go test ./internal/metrics/ ./internal/proxy/ -v` (interface change must not break proxy).
-- [ ] **Step 5: Commit** — `git commit -am "feat: add backend connection reuse metrics"`
+- [x] **Step 1: Failing test** — metrics package: call `BackendReuse("s1", "reused")` twice and `("s1", "capped")` once, assert counter values via the registry the way the existing BackendDial test does.
+- [x] **Step 2: Verify RED** — method undefined.
+- [x] **Step 3: Implement** — one CounterVec, two label values; wire into the interface + noMetrics.
+- [x] **Step 4: GREEN** — `go test ./internal/metrics/ ./internal/proxy/ -v` (interface change must not break proxy).
+- [x] **Step 5: Commit** — `git commit -am "feat: add backend connection reuse metrics"`
 
 ### Task 3: Affinity cache + stash-on-clean-detach
 
@@ -132,3 +132,23 @@ func (t *txn) detachOrStash() // stash when eligible, else detach(true)
 - [ ] **Step 4: examples/bifrost.hcl** — commented `# reuse_envelopes = 50` with a one-line comment in the pool showcase; `go test ./internal/config/ -v` stays green.
 - [ ] **Step 5: Gates** — `go test ./...` green; `gofmt -l internal cmd test` empty.
 - [ ] **Step 6: Commit** — `git commit -am "docs: backend connection reuse"`
+
+### Task 7: allow_cleartext opt-in on both auth legs
+
+**Files:**
+- Modify: `internal/config/config.go` (ListenerAuth + PoolAuth), `internal/config/rawschema.go`, `internal/config/load.go`, `internal/config/validate.go`
+- Modify: `internal/proxy/session.go` (capabilities), `internal/proxy/auth.go` (538 gate), `internal/proxy/attach.go` (dialOpts), `internal/backend/backend.go` (Dial guard + Opts), `internal/health/probe.go` (opts copy)
+- Create: `internal/config/testdata/auth-cleartext.hcl`
+- Modify: `docs/operations.md`, `examples/bifrost.hcl`
+- Test: `internal/config/load_test.go`, `internal/config/validate_test.go`, `internal/proxy/session_test.go` or auth tests, `internal/backend/auth_test.go`, `internal/health/probe_test.go`
+
+**Interfaces:**
+- Produces: `ListenerAuth.AllowCleartext bool` and `PoolAuth.AllowCleartext bool` (HCL `allow_cleartext`, optional, default false); `backend.Opts.AuthAllowCleartext bool`; `config.CheckParams.AuthAllowCleartext bool` (resolved from pool auth like the credentials).
+- Semantics: knob ON lifts, for that block only: (backend) the `pool auth requires backend TLS` error, the `pool auth requires TLS probes` error, and Dial's cleartext-AUTH refusal; (client) the `client auth requires starttls` error, the pre-TLS advertisement suppression, and the 538 RplAuthEncryption gate. Knob OFF (default): every current behavior byte-identical.
+
+- [ ] **Step 1: Failing tests** — fixture `auth-cleartext.hcl` (listener auth WITHOUT starttls + `allow_cleartext = true`; pool auth + `backend_tls = "none"` + `allow_cleartext = true`; loads clean and both bools decode true). Client leg: session test on a plaintext listener with the knob — EHLO shows `AUTH PLAIN` pre-TLS, `AUTH PLAIN <valid>` → 235, MAIL proceeds; without the knob the existing 538/advertisement tests keep passing untouched. Backend leg: Dial with creds + `TLSMode "none"` + `AuthAllowCleartext: true` against a fake advertising AUTH PLAIN → authenticates (exact transcript line), while the existing refusal test (knob off) stays green. Probe: creds + `params.TLS "none"` + allow → probe ok.
+- [ ] **Step 2: Verify RED** — targeted -run filters per package.
+- [ ] **Step 3: Implement** — decode raw→resolved on both auth blocks; validate.go: wrap the three guard rules in `!AllowCleartext`; session `capabilities()`: advertise when `Auth != nil && (s.tlsActive || Auth.AllowCleartext) && !authed`; auth(): 538 only when `!s.tlsActive && !Auth.AllowCleartext`; backend Dial guard gains `&& !opts.AuthAllowCleartext`; attach.go dialOpts + probe dialForHandshake + CheckParams resolution copy the flag alongside the credentials.
+- [ ] **Step 4: GREEN** — `go test ./internal/config/ ./internal/proxy/ ./internal/backend/ ./internal/health/ -v`; then `go test ./...`; `gofumpt -l internal cmd test` empty.
+- [ ] **Step 5: Docs** — operations.md SMTP AUTH section: an "allow_cleartext" note (what it lifts, when it is sane: network-layer-secured in-cluster links; default strict and why — backend_tls defaults to none); examples/bifrost.hcl commented lines in both auth blocks.
+- [ ] **Step 6: Commit** — `git commit -am "feat: allow_cleartext opt-in for auth on both legs"`
