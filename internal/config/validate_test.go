@@ -61,6 +61,15 @@ func TestValidateDiagnostics(t *testing.T) {
 		{"backend_connect > backend_mail_reply (inverted timeout hierarchy)", "testdata/bad-backend-connect-gt-mail-reply.hcl", "backend_connect exceeds backend_mail_reply", hcl.DiagError, 5},
 		{"RFC 5321 floor warning", "testdata/warn-rfc-floor.hcl", "RFC 5321", hcl.DiagWarning, 0},
 		{"admin block absent warning", "testdata/warn-admin-absent.hcl", "No admin plane configured", hcl.DiagWarning, 0},
+
+		{"client auth without starttls", "testdata/bad-auth-no-starttls.hcl", "client auth requires starttls", hcl.DiagError, 0},
+		{"auth block without users", "testdata/bad-auth-no-users.hcl", "auth block without users", hcl.DiagError, 0},
+		{"duplicate auth user", "testdata/bad-auth-dup-user.hcl", "duplicate auth user", hcl.DiagError, 0},
+		{"malformed hashed_password", "testdata/bad-auth-short-hash.hcl", "malformed hashed_password", hcl.DiagError, 0},
+		{"auth user without a salt", "testdata/bad-auth-empty-salt.hcl", "auth user without a salt", hcl.DiagError, 0},
+		{"pool auth requires backend TLS", "testdata/bad-pool-auth-cleartext.hcl", "pool auth requires backend TLS", hcl.DiagError, 0},
+		{"pool auth without credentials", "testdata/bad-pool-auth-empty.hcl", "pool auth without credentials", hcl.DiagError, 0},
+		{"control character in auth credential", "testdata/bad-auth-control-char.hcl", "Control character in auth credential", hcl.DiagError, 0},
 	}
 
 	for _, tc := range cases {
