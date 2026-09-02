@@ -224,6 +224,25 @@ func TestSessionAuthRequiresTLS538(t *testing.T) {
 	c.expect("538 5.7.11 Encryption required for requested authentication mechanism")
 }
 
+// TestSessionAuthAllowCleartextWithStartTLS covers the combined shape:
+// starttls IS configured (unlike TestSessionAuthAllowCleartext, which has no
+// cert at all) AND allow_cleartext is set. allow_cleartext means "plaintext
+// AUTH is acceptable on this listener" regardless of whether starttls is
+// also offered, so the pre-TLS EHLO must list both STARTTLS and AUTH PLAIN,
+// matching the 538 gate (auth.go) which already accepts a blind AUTH here.
+func TestSessionAuthAllowCleartextWithStartTLS(t *testing.T) {
+	cfg := authTestConfig()
+	cfg.Listener.Auth.AllowCleartext = true
+	c := newTestClient(t, cfg, fakesmtp.TestCert(t), &stubHandler{})
+	c.expect("220 bifrost.test ESMTP")
+
+	c.send("EHLO client.example")
+	c.expect("250-bifrost.test", "250-PIPELINING", "250-8BITMIME", "250-SIZE 10485760", "250-STARTTLS", "250 AUTH PLAIN")
+
+	c.send("AUTH PLAIN " + authPlainPayload("rttskr-team", "pw"))
+	c.expect("235 2.7.0 Authentication succeeded")
+}
+
 // TestSessionAuthAllowCleartext is TestSessionAuthRequiresTLS538's mirror
 // with the allow_cleartext knob on and NO starttls block at all (the
 // scenario the knob exists for: a link secured at the network layer, e.g.

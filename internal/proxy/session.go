@@ -584,6 +584,16 @@ func (s *Session) tlsOffered() bool {
 func (s *Session) capabilities() []string {
 	caps := s.cfg.Listener.Capabilities
 	if s.tlsOffered() {
+		// allow_cleartext means "plaintext AUTH is acceptable on this
+		// listener" even when starttls is also configured — the 538 gate
+		// (auth.go) already accepts a blind AUTH here, so the
+		// advertisement must match rather than hiding it pre-upgrade.
+		// append onto a fresh backing array: caps aliases the shared
+		// config's slice, so appending in place would risk corrupting it
+		// across sessions.
+		if s.cfg.Listener.Auth != nil && s.cfg.Listener.Auth.AllowCleartext && !s.authed {
+			return append(append([]string(nil), caps...), "AUTH PLAIN")
+		}
 		return caps
 	}
 	out := make([]string, 0, len(caps))
@@ -593,10 +603,9 @@ func (s *Session) capabilities() []string {
 		}
 	}
 	// AUTH is post-TLS only (RFC 4954 strict-PLAIN, decision above), unless
-	// Auth.AllowCleartext opts out for a network-layer-secured link: it
-	// never appears on the tlsOffered() early-return path above, only once
-	// TLS is actually active (or the knob allows cleartext), and only
-	// until the client has authenticated.
+	// Auth.AllowCleartext opts out for a network-layer-secured link — same
+	// condition as the tlsOffered() branch above, applied here once TLS is
+	// actually active, and only until the client has authenticated.
 	if s.cfg.Listener.Auth != nil && (s.tlsActive || s.cfg.Listener.Auth.AllowCleartext) && !s.authed {
 		out = append(out, "AUTH PLAIN")
 	}
