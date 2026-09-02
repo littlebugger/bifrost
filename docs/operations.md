@@ -569,11 +569,84 @@ authenticates for real, so a rotated or mistyped backend password
 surfaces in `/servers` within one probe interval — the same guarantee
 capability drift already gets.
 
+## Backend connection reuse
+
+By default (`reuse_envelopes` omitted, `0`, or `1`) every envelope gets
+its own backend connection, dialed and handshaked fresh, then politely
+`QUIT`'d — PROJECT.md's D4. A pool can opt into session-affine reuse
+instead:
+
+```hcl
+pool "outgoing" {
+  reuse_envelopes = 50   # 0/1/omitted = fresh conn per envelope (default)
+}
+```
+
+`N > 1` both enables reuse and caps it: a connection that finishes an
+envelope cleanly is kept open and handed to that client session's next
+envelope, provided the balancer's fresh per-`MAIL` pick (R3 is
+untouched — every envelope still gets a fresh pick) lands on the same
+server. The connection is closed and re-dialed once it has carried `N`
+envelopes, so `N` is also the freshness bound: AUTH state, TLS session,
+and anything else the backend attaches to a connection lives for at most
+`N` envelopes. There is exactly one reuse slot per client session
+(`internal/proxy`'s `backendAffinity`) — never shared across sessions,
+never holding more than one cached connection.
+
+**Revalidation, not a reaper.** There is no idle reaper watching cached
+connections — instead, every reuse attempt sends `RSET` on the cached
+connection first and reads its reply before trusting it (never relayed
+to the client: the client never knew this connection existed before
+this envelope). Any error or non-`2xx` reply silently closes the cached
+connection and falls back to a normal dial, exactly as if reuse had
+never applied — proven by `TestReuseDeadCachedConnFailsOverTransparently`
+(`internal/proxy/relay_test.go`) and, against a real killed backend,
+`TestReuseDeadCachedConnFailsOverToFreshDial`
+(`test/integration/reuse_test.go`). This is a deliberate ceiling, not an
+oversight: RSET revalidation already turns a dead cached connection into
+a self-healing event — one silent re-dial on the next envelope, never a
+client-visible error — so a reaper would only save the wire cost of that
+one extra RSET per idle timeout. Add one if a workload's idle gaps
+between envelopes on the same session get long and frequent enough for
+that cost to matter.
+
+**Observability.** `bifrost_backend_conn_reuse_total{server, outcome}`
+counts every reuse decision, `outcome` one of `reused` (a cached
+connection was handed to the next envelope) or `capped` (the connection
+hit `N` and was closed instead) — see the Metrics reference below. The
+transaction log gains `conn_envelope=<k>`: `1` for a fresh connection's
+first (and, with reuse off, only) envelope, `k > 1` for the `k`-th
+envelope on a connection that has now been reused `k-1` times.
+
+**Interactions.**
+- **Leases and `leastconn`.** A lease is still taken and released for
+  every envelope, same as today — a cached idle connection holds no
+  lease and is invisible to `leastconn`'s in-flight accounting between
+  envelopes, exactly like any other idle connection (PROJECT.md's
+  Accepted Semantics & Risks).
+- **Pool auth.** With `pool.auth` configured, `AUTH PLAIN` happens once
+  per connection, not once per envelope: a reused connection carries its
+  first envelope's authenticated state forward, so envelopes 2..N on it
+  never re-send `AUTH` — proven end to end (one `AUTH` line across three
+  envelopes on one connection) by
+  `TestReuseSharesOneConnAcrossEnvelopesWithSingleAuth`
+  (`test/integration/reuse_test.go`).
+- **Health and drain.** Active probes are unaffected (always fresh
+  dials). A cached connection is not in the relay's tracked-legs map —
+  it is never mid-message — so session teardown (client `QUIT`, drain)
+  is what closes it, not `CloseLegs`.
+
+Proven by the `TestReuse*` suite in `internal/proxy/relay_test.go`
+(stash/cap/server-mismatch/lease-denial unit coverage) and
+`test/integration/reuse_test.go` (full-chain auth-once and dead-conn
+failover above, plus `TestReuseEnvelopesOmittedDialsFreshPerEnvelope`,
+which pins today's default behavior unchanged).
+
 ## Metrics reference
 
-Twelve stable names (golden-list tested by `TestMetricNamesStable`,
+Thirteen stable names (golden-list tested by `TestMetricNamesStable`,
 `internal/metrics/metrics_test.go` — a name change here is a breaking
-change to anyone's dashboards), and all twelve actually present in a
+change to anyone's dashboards), and all thirteen actually present in a
 live scrape of the real `GET /metrics` handler — proven by
 `TestMetricsServed` (`internal/admin/admin_test.go`), which is what
 would have caught `ServerCollector` not being registered on the
@@ -587,6 +660,7 @@ registry `admin.New` serves:
 | `bifrost_synthesized_replies_total` | counter | `code_enhanced` (e.g. `"451 4.4.1"`) | replies Bifrost generated itself rather than relaying a backend's |
 | `bifrost_relay_bytes_total` | counter | `direction` (`to_backend`/`to_client`) | verbatim bytes relayed, by direction |
 | `bifrost_backend_dials_total` | counter | `server`, `result` (`ok`/`fail`) | backend dial attempts |
+| `bifrost_backend_conn_reuse_total` | counter | `server`, `outcome` (`reused`/`capped`) | session-affine backend connection reuse decisions — see "Backend connection reuse" above |
 | `bifrost_probe_total` | counter | `server`, `level`, `result` (`ok`/`fail`/`incompatible`) | active health probes completed |
 | `bifrost_server_up` | gauge | `pool`, `server` | `1` if the active check currently reports it reachable |
 | `bifrost_server_eligible` | gauge | `pool`, `server` | `1` if up **and** ready/not-force-down **and** capability-compatible — a server can be `up=1` and deliberately not receiving traffic (`eligible=0`); that gap is the point of having both gauges |
@@ -628,6 +702,7 @@ delivered message, a latched failure, a client hangup, `RSET`) —
 | `failover_attempts` | `backend.Dial` attempts across every candidate tried |
 | `synth` | the synthesized reply's trimmed text, if the conclusion was Bifrost's own rather than relayed |
 | `duplicate_risk` | `true` for the duplicate-delivery window (see below) |
+| `conn_envelope` | this transaction's ordinal on its backend connection — `1` for a fresh connection, `k > 1` for the `k`-th envelope on one reused via `reuse_envelopes` (see "Backend connection reuse" above); omitted entirely if no backend ever attached |
 
 Never logs message body content, only counts — proven by relaying a
 real message carrying a unique marker string through a real backend

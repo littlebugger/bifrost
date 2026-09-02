@@ -10,9 +10,24 @@ import (
 )
 
 // This file is the backend leg's lifecycle: walking the candidates,
-// dialing one, and letting it go again. All of it is per transaction —
-// decision D4 is a fresh connection per message, so there is no pool to
-// keep consistent and nothing to leak from one transaction to the next.
+// dialing one, and (usually) letting it go again. Decision D4 keeps
+// fresh-per-transaction as the default: a dialed conn answers exactly
+// one transaction and is closed, so there is no pool to keep consistent
+// and nothing to leak from one transaction to the next.
+//
+// Above the default, a pool's reuse_envelopes cap turns "letting it go"
+// into "handing it back": a conn that finished its envelope cleanly is
+// stashed onto backendAffinity, one reuse slot owned by the Session and
+// shared by every Txn that runs on it — never shared across sessions,
+// never holding more than one conn. Two sites touch the slot: stash
+// (below) fills it instead of closing the leg at the two clean detach
+// points (a delivered DATA verdict, a relayed RSET); tryReuse drains it
+// at the top of attachAndRelay, revalidating the cached conn with RSET
+// before handing it back into the walk exactly like a fresh dial. The
+// cap and the revalidation are what keep this from becoming the
+// connection pool D4 rejected: a conn is never reused past
+// reuse_envelopes envelopes, and never reused without first proving
+// itself alive.
 
 // attachAttempts is the per-candidate connect budget from PROJECT.md's
 // timeout table: each candidate gets two attempts (each bounded by

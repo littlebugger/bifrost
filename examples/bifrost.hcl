@@ -111,6 +111,8 @@ pool "bulk" {
   backend_tls_server_name = "mail.bulk.example.com"
   backend_tls_ca          = "server.crt"
 
+  # reuse_envelopes = 50   # session-affine reuse: keep a backend conn across up to 50 envelopes instead of one-per-envelope
+
   server "b1" {
     address = "198.51.100.21:25"
     weight  = 1
