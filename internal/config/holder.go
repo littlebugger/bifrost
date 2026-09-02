@@ -103,15 +103,22 @@ func RestartRequired(old, newCfg *Config) []string {
 }
 
 // listenerAuthChanged reports whether old and newCfg's listener auth
-// differ: one is configured and the other isn't, or the user sets don't
+// differ: one is configured and the other isn't, the user sets don't
 // match (name, salt, or hash) — order-independent, so reordering user
-// blocks in the file alone doesn't spuriously warn.
+// blocks in the file alone doesn't spuriously warn — or AllowCleartext
+// flips. AllowCleartext gates a Session's plaintext-AUTH acceptance the
+// same way the user set gates AUTH at all, and a Session reads both at
+// accept, so toggling it alone (tightening it OFF, most importantly)
+// needs the same "restart required" warning as a credential edit does.
 func listenerAuthChanged(old, newCfg *ListenerAuth) bool {
 	if (old == nil) != (newCfg == nil) {
 		return true
 	}
 	if old == nil {
 		return false
+	}
+	if old.AllowCleartext != newCfg.AllowCleartext {
+		return true
 	}
 	if len(old.Users) != len(newCfg.Users) {
 		return true

@@ -148,3 +148,40 @@ func TestRestartRequiredListenerAuth(t *testing.T) {
 		}
 	}
 }
+
+// TestRestartRequiredListenerAuthCleartext: flipping allow_cleartext alone
+// (same users, same hash) must still warn "restart required" — a Session
+// captures Listener.Auth, AllowCleartext included, at accept, so a reload
+// that only tightens allow_cleartext OFF would otherwise print "reloaded"
+// while every already-open (and newly-accepted, pre-restart) session keeps
+// accepting plaintext AUTH. Identical auth, AllowCleartext included, must
+// warn about nothing.
+func TestRestartRequiredListenerAuthCleartext(t *testing.T) {
+	authWith := func(allowCleartext bool) *ListenerAuth {
+		return &ListenerAuth{
+			Users:          []AuthUser{{Name: "alice", Salt: "salt", HashedPassword: strings.Repeat("a", 64)}},
+			AllowCleartext: allowCleartext,
+		}
+	}
+
+	oldCfg := &Config{Listener: Listener{Auth: authWith(true)}}
+	changedCfg := &Config{Listener: Listener{Auth: authWith(false)}}
+
+	var authWarning string
+	for _, w := range RestartRequired(oldCfg, changedCfg) {
+		if strings.Contains(w, "listener auth changed") {
+			authWarning = w
+		}
+	}
+	if authWarning == "" {
+		t.Fatalf("RestartRequired(old, changed) = %v, want a listener auth warning for an AllowCleartext-only change",
+			RestartRequired(oldCfg, changedCfg))
+	}
+
+	identicalCfg := &Config{Listener: Listener{Auth: authWith(true)}}
+	for _, w := range RestartRequired(oldCfg, identicalCfg) {
+		if strings.Contains(w, "listener auth changed") {
+			t.Errorf("RestartRequired(old, identical) = %v, want no listener auth warning for identical auth", w)
+		}
+	}
+}

@@ -197,6 +197,10 @@ func (t *txn) tryReuse(candidates []*config.Server, lines [][]byte) (done bool, 
 		return false, false, nil
 	}
 	pool := poolFor(t.cfg, a.srv)
+	// A reload that lowers reuse_envelopes to <=1 also lands here: the
+	// already-cached conn isn't drained on the spot, just never picked back
+	// up again — it strands in the slot until closeIfAny reclaims it at the
+	// next stash or session teardown (spec-consistent, not a leak).
 	if pool == nil || pool.ReuseEnvelopes <= 1 || a.envelopes >= pool.ReuseEnvelopes {
 		return false, false, nil
 	}
@@ -480,8 +484,12 @@ func (a *backendAffinity) closeIfAny() {
 // unresolvable, or the cap reached — falls back to today's plain
 // detach(true), the cap additionally counting a "capped" reuse event.
 func (t *txn) detachOrStash() {
+	if t.c == nil || t.broken {
+		t.detach(true)
+		return
+	}
 	pool := poolFor(t.cfg, t.srv)
-	if t.c == nil || t.broken || pool == nil || pool.ReuseEnvelopes <= 1 {
+	if pool == nil || pool.ReuseEnvelopes <= 1 {
 		t.detach(true)
 		return
 	}
