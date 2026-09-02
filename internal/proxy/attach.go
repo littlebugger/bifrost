@@ -300,6 +300,7 @@ func (t *txn) dialOpts(pool *config.Pool) backend.Opts {
 	}
 	if pool.Auth != nil {
 		opts.AuthUsername, opts.AuthPassword = pool.Auth.Username, pool.Auth.Password
+		opts.AuthAllowCleartext = pool.Auth.AllowCleartext
 	}
 	if pool.BackendTLSServerName != "" || pool.CAPool != nil {
 		// The pool's backend_tls_ca, parsed once per config load

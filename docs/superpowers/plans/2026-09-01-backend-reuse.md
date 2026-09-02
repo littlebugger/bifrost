@@ -78,14 +78,14 @@ func (a *backendAffinity) closeIfAny() // Abort + clear; nil-safe
 func (t *txn) detachOrStash() // stash when eligible, else detach(true)
 ```
 
-- [ ] **Step 1: Failing tests** (fakesmtp-driven, mirror relay_test.go's harness):
+- [x] **Step 1: Failing tests** (fakesmtp-driven, mirror relay_test.go's harness):
   1. `reuse_envelopes = 2`, one envelope completes → the fake's session stays open (no QUIT: assert `srv.DialCount() == 1` and the transcript has no QUIT event), and the session's next... (reuse itself is Task 4 — here assert only that the conn was NOT closed after the envelope).
   2. Session ends (client QUITs) → the cached conn is closed (fake observes disconnect; use the fake's session-closed observability the way existing tests detect drops).
   3. `reuse_envelopes = 0` regression: envelope completes → polite QUIT exactly as today (existing tests must not change).
-- [ ] **Step 2: Verify RED** — `go test ./internal/proxy/ -run TestReuse -v`.
-- [ ] **Step 3: Implement** — `detachOrStash()`: let k = the number of envelopes this conn has now carried (fresh dial's first envelope → k=1; tracked in the affinity slot and set on attach). Eligible to stash when `t.c != nil && !t.broken && pool.ReuseEnvelopes > 1 && k < pool.ReuseEnvelopes` (pool = live `poolFor(t.cfg, t.srv)`); at `k == pool.ReuseEnvelopes` → `t.r.metrics.BackendReuse(srvName(t.srv), "capped")` then `detach(true)`; ineligible for any other reason → plain `detach(true)`. Stashing = `untrackLeg`, `sig.Success`, `release()`, store into `tx.affinity`, clear `t.c/t.srv/t.release`. Call sites: `data.go:94` (`t.detach(body.delivered)` → `if body.delivered { t.detachOrStash() } else { t.detach(false) }`) and `reset()`'s `t.detach(true)`. The EHLO/HELO/QUIT site in `command()` stays `t.detach(true)`. Envelope counting: increment when a conn attaches for an envelope (fresh dial = 1; set `t.record.connEnvelope`). Session: `affinity backendAffinity` field, `tx.affinity = &s.affinity` in mail(), `defer s.affinity.closeIfAny()` in Run. txnlog: emit `conn_envelope` when > 0.
-- [ ] **Step 4: GREEN** — `go test ./internal/proxy/ -v` (whole package: no existing detach-behavior regressions).
-- [ ] **Step 5: Commit** — `git commit -am "feat: stash clean backend legs for session-affine reuse"`
+- [x] **Step 2: Verify RED** — `go test ./internal/proxy/ -run TestReuse -v`.
+- [x] **Step 3: Implement** — `detachOrStash()`: let k = the number of envelopes this conn has now carried (fresh dial's first envelope → k=1; tracked in the affinity slot and set on attach). Eligible to stash when `t.c != nil && !t.broken && pool.ReuseEnvelopes > 1 && k < pool.ReuseEnvelopes` (pool = live `poolFor(t.cfg, t.srv)`); at `k == pool.ReuseEnvelopes` → `t.r.metrics.BackendReuse(srvName(t.srv), "capped")` then `detach(true)`; ineligible for any other reason → plain `detach(true)`. Stashing = `untrackLeg`, `sig.Success`, `release()`, store into `tx.affinity`, clear `t.c/t.srv/t.release`. Call sites: `data.go:94` (`t.detach(body.delivered)` → `if body.delivered { t.detachOrStash() } else { t.detach(false) }`) and `reset()`'s `t.detach(true)`. The EHLO/HELO/QUIT site in `command()` stays `t.detach(true)`. Envelope counting: increment when a conn attaches for an envelope (fresh dial = 1; set `t.record.connEnvelope`). Session: `affinity backendAffinity` field, `tx.affinity = &s.affinity` in mail(), `defer s.affinity.closeIfAny()` in Run. txnlog: emit `conn_envelope` when > 0.
+- [x] **Step 4: GREEN** — `go test ./internal/proxy/ -v` (whole package: no existing detach-behavior regressions).
+- [x] **Step 5: Commit** — `git commit -am "feat: stash clean backend legs for session-affine reuse"`
 
 ### Task 4: Reuse path in attachAndRelay
 
@@ -97,41 +97,41 @@ func (t *txn) detachOrStash() // stash when eligible, else detach(true)
 - Consumes: Task 3's `tx.affinity`, Task 2's metrics.
 - Produces: reuse attempt before the candidate walk in `attachAndRelay`.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   1. Happy path: `reuse_envelopes = 3`, three envelopes on one client session → `DialCount() == 1`, wire shows `RSET` before envelopes 2 and 3, all three MAIL verdicts relayed, `conn_envelope` reaches 3 (assert via the log record if the harness exposes it, else via metrics: `reused` counted twice).
   2. Cap rollover: `reuse_envelopes = 2`, three envelopes → `DialCount() == 2`, `capped` counted once, `reused` counted once.
   3. Dead cached conn: complete envelope 1, `srv.SetDown(...)`/stop the fake between envelopes, envelope 2 → transparent fresh dial attempt (client sees the normal outcome for a down backend — with a second healthy candidate configured, failover works; no extra client-visible error from the stale conn).
   4. Server mismatch: two-server pool where the pick moves (weight/roundrobin) → cached conn closed, fresh dial to the new server, no reuse metric.
   5. Lease denial on reuse: max_transactions=1 with a concurrent holder → cache retained (next envelope after release can still reuse) OR — if retaining proves awkward — closed; assert whichever the implementation does explicitly (spec prefers retained).
-- [ ] **Step 2: Verify RED** — `go test ./internal/proxy/ -run TestReuse -v`.
-- [ ] **Step 3: Implement** — at the top of `attachAndRelay`, after `t.candidates(...)`: if `tx.affinity` holds a conn and `candidates[0] == tx.affinity.srv` (pointer identity) and live `poolFor` gives `ReuseEnvelopes > 1` and `tx.affinity.envelopes < N`: send `RSET` on the cached conn (SetCommandClass MailRcpt, SendLine, read one reply — reuse the conn's reply reader the way relayBatch does but WITHOUT relaying to the client; any error or final code outside 2xx → `Abort` + clear cache + fall through, log at Debug, no health signal); then `t.r.lease(srv)` (nil → return conn to cache untouched, `sawSaturated = true`, fall through); then attach: `t.srv, t.c, t.release = ...`, `trackLeg`, record pool/server, `tx.affinity.envelopes++`, `t.record.connEnvelope = tx.affinity.envelopes`, clear the cache slot (the conn is now attached, not cached), `t.r.metrics.BackendReuse(srv.Name, "reused")`, `t.cw.reset()`, `relayBatch` — sharing the post-dial code path with the walk rather than duplicating it (extract a small helper if that keeps it DRY).
-- [ ] **Step 4: GREEN** — `go test ./internal/proxy/ -v` and `go test -race ./internal/proxy/ -run TestReuse`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: reuse cached backend legs across envelopes"`
+- [x] **Step 2: Verify RED** — `go test ./internal/proxy/ -run TestReuse -v`.
+- [x] **Step 3: Implement** — at the top of `attachAndRelay`, after `t.candidates(...)`: if `tx.affinity` holds a conn and `candidates[0] == tx.affinity.srv` (pointer identity) and live `poolFor` gives `ReuseEnvelopes > 1` and `tx.affinity.envelopes < N`: send `RSET` on the cached conn (SetCommandClass MailRcpt, SendLine, read one reply — reuse the conn's reply reader the way relayBatch does but WITHOUT relaying to the client; any error or final code outside 2xx → `Abort` + clear cache + fall through, log at Debug, no health signal); then `t.r.lease(srv)` (nil → return conn to cache untouched, `sawSaturated = true`, fall through); then attach: `t.srv, t.c, t.release = ...`, `trackLeg`, record pool/server, `tx.affinity.envelopes++`, `t.record.connEnvelope = tx.affinity.envelopes`, clear the cache slot (the conn is now attached, not cached), `t.r.metrics.BackendReuse(srv.Name, "reused")`, `t.cw.reset()`, `relayBatch` — sharing the post-dial code path with the walk rather than duplicating it (extract a small helper if that keeps it DRY).
+- [x] **Step 4: GREEN** — `go test ./internal/proxy/ -v` and `go test -race ./internal/proxy/ -run TestReuse`.
+- [x] **Step 5: Commit** — `git commit -am "feat: reuse cached backend legs across envelopes"`
 
 ### Task 5: Integration test
 
 **Files:**
 - Create: `test/integration/reuse_test.go`
 
-- [ ] **Step 1: Write tests** (reuse test/integration harness incl. auth_test.go's serveTLS):
+- [x] **Step 1: Write tests** (reuse test/integration harness incl. auth_test.go's serveTLS):
   1. Full chain with pool auth + `reuse_envelopes = 3`: client sends three messages on one session → fake transcript shows exactly ONE `AUTH PLAIN` line (per connection, not per envelope), `RSET` between envelopes, `DialCount() == 1`.
   2. Kill the fake after envelope 1 (`SetDown`), restart, envelope 2 → delivered on a fresh dial, client saw only normal replies.
   3. `reuse_envelopes` omitted: two envelopes → `DialCount() == 2` (regression pin for the default).
-- [ ] **Step 2: Run** — `go test -tags=integration ./test/integration/ -run TestReuse -v` → PASS (fix forward).
-- [ ] **Step 3: Full suite** — `go test ./...` green.
-- [ ] **Step 4: Commit** — `git commit -am "test: backend reuse integration coverage"`
+- [x] **Step 2: Run** — `go test -tags=integration ./test/integration/ -run TestReuse -v` → PASS (fix forward).
+- [x] **Step 3: Full suite** — `go test ./...` green.
+- [x] **Step 4: Commit** — `git commit -am "test: backend reuse integration coverage"`
 
 ### Task 6: Documentation
 
 **Files:**
 - Modify: `PROJECT.md`, `docs/operations.md`, `examples/bifrost.hcl`, `internal/proxy/attach.go` (header comment)
 
-- [ ] **Step 1: PROJECT.md** — amend decision D4's row (fresh-per-transaction remains the default; session-affine reuse opt-in via `reuse_envelopes`, cap = freshness bound) and any prose asserting "fresh connection per message" (grep `fresh connection` / `D4`); note the leastconn caveat (cached idle conns hold no lease and are invisible to in-flight counts).
-- [ ] **Step 2: attach.go header** — the file comment currently says "decision D4 is a fresh connection per message, so there is no pool to keep consistent and nothing to leak from one transaction to the next" — rewrite to describe the affinity slot and its ownership.
-- [ ] **Step 3: operations.md** — a "Backend connection reuse" section: knob semantics (0/1 off, N>1 cap), RSET revalidation self-healing (no idle reaper — a ponytail-style ceiling note: backend idle timeouts surface as one silent re-dial), metrics names, `conn_envelope` log field, interaction with pool auth (AUTH once per connection).
-- [ ] **Step 4: examples/bifrost.hcl** — commented `# reuse_envelopes = 50` with a one-line comment in the pool showcase; `go test ./internal/config/ -v` stays green.
-- [ ] **Step 5: Gates** — `go test ./...` green; `gofmt -l internal cmd test` empty.
-- [ ] **Step 6: Commit** — `git commit -am "docs: backend connection reuse"`
+- [x] **Step 1: PROJECT.md** — amend decision D4's row (fresh-per-transaction remains the default; session-affine reuse opt-in via `reuse_envelopes`, cap = freshness bound) and any prose asserting "fresh connection per message" (grep `fresh connection` / `D4`); note the leastconn caveat (cached idle conns hold no lease and are invisible to in-flight counts).
+- [x] **Step 2: attach.go header** — the file comment currently says "decision D4 is a fresh connection per message, so there is no pool to keep consistent and nothing to leak from one transaction to the next" — rewrite to describe the affinity slot and its ownership.
+- [x] **Step 3: operations.md** — a "Backend connection reuse" section: knob semantics (0/1 off, N>1 cap), RSET revalidation self-healing (no idle reaper — a ponytail-style ceiling note: backend idle timeouts surface as one silent re-dial), metrics names, `conn_envelope` log field, interaction with pool auth (AUTH once per connection).
+- [x] **Step 4: examples/bifrost.hcl** — commented `# reuse_envelopes = 50` with a one-line comment in the pool showcase; `go test ./internal/config/ -v` stays green.
+- [x] **Step 5: Gates** — `go test ./...` green; `gofmt -l internal cmd test` empty.
+- [x] **Step 6: Commit** — `git commit -am "docs: backend connection reuse"`
 
 ### Task 7: allow_cleartext opt-in on both auth legs
 
@@ -146,9 +146,9 @@ func (t *txn) detachOrStash() // stash when eligible, else detach(true)
 - Produces: `ListenerAuth.AllowCleartext bool` and `PoolAuth.AllowCleartext bool` (HCL `allow_cleartext`, optional, default false); `backend.Opts.AuthAllowCleartext bool`; `config.CheckParams.AuthAllowCleartext bool` (resolved from pool auth like the credentials).
 - Semantics: knob ON lifts, for that block only: (backend) the `pool auth requires backend TLS` error, the `pool auth requires TLS probes` error, and Dial's cleartext-AUTH refusal; (client) the `client auth requires starttls` error, the pre-TLS advertisement suppression, and the 538 RplAuthEncryption gate. Knob OFF (default): every current behavior byte-identical.
 
-- [ ] **Step 1: Failing tests** — fixture `auth-cleartext.hcl` (listener auth WITHOUT starttls + `allow_cleartext = true`; pool auth + `backend_tls = "none"` + `allow_cleartext = true`; loads clean and both bools decode true). Client leg: session test on a plaintext listener with the knob — EHLO shows `AUTH PLAIN` pre-TLS, `AUTH PLAIN <valid>` → 235, MAIL proceeds; without the knob the existing 538/advertisement tests keep passing untouched. Backend leg: Dial with creds + `TLSMode "none"` + `AuthAllowCleartext: true` against a fake advertising AUTH PLAIN → authenticates (exact transcript line), while the existing refusal test (knob off) stays green. Probe: creds + `params.TLS "none"` + allow → probe ok.
-- [ ] **Step 2: Verify RED** — targeted -run filters per package.
-- [ ] **Step 3: Implement** — decode raw→resolved on both auth blocks; validate.go: wrap the three guard rules in `!AllowCleartext`; session `capabilities()`: advertise when `Auth != nil && (s.tlsActive || Auth.AllowCleartext) && !authed`; auth(): 538 only when `!s.tlsActive && !Auth.AllowCleartext`; backend Dial guard gains `&& !opts.AuthAllowCleartext`; attach.go dialOpts + probe dialForHandshake + CheckParams resolution copy the flag alongside the credentials.
-- [ ] **Step 4: GREEN** — `go test ./internal/config/ ./internal/proxy/ ./internal/backend/ ./internal/health/ -v`; then `go test ./...`; `gofumpt -l internal cmd test` empty.
-- [ ] **Step 5: Docs** — operations.md SMTP AUTH section: an "allow_cleartext" note (what it lifts, when it is sane: network-layer-secured in-cluster links; default strict and why — backend_tls defaults to none); examples/bifrost.hcl commented lines in both auth blocks.
-- [ ] **Step 6: Commit** — `git commit -am "feat: allow_cleartext opt-in for auth on both legs"`
+- [x] **Step 1: Failing tests** — fixture `auth-cleartext.hcl` (listener auth WITHOUT starttls + `allow_cleartext = true`; pool auth + `backend_tls = "none"` + `allow_cleartext = true`; loads clean and both bools decode true). Client leg: session test on a plaintext listener with the knob — EHLO shows `AUTH PLAIN` pre-TLS, `AUTH PLAIN <valid>` → 235, MAIL proceeds; without the knob the existing 538/advertisement tests keep passing untouched. Backend leg: Dial with creds + `TLSMode "none"` + `AuthAllowCleartext: true` against a fake advertising AUTH PLAIN → authenticates (exact transcript line), while the existing refusal test (knob off) stays green. Probe: creds + `params.TLS "none"` + allow → probe ok.
+- [x] **Step 2: Verify RED** — targeted -run filters per package.
+- [x] **Step 3: Implement** — decode raw→resolved on both auth blocks; validate.go: wrap the three guard rules in `!AllowCleartext`; session `capabilities()`: advertise when `Auth != nil && (s.tlsActive || Auth.AllowCleartext) && !authed`; auth(): 538 only when `!s.tlsActive && !Auth.AllowCleartext`; backend Dial guard gains `&& !opts.AuthAllowCleartext`; attach.go dialOpts + probe dialForHandshake + CheckParams resolution copy the flag alongside the credentials.
+- [x] **Step 4: GREEN** — `go test ./internal/config/ ./internal/proxy/ ./internal/backend/ ./internal/health/ -v`; then `go test ./...`; `gofumpt -l internal cmd test` empty.
+- [x] **Step 5: Docs** — operations.md SMTP AUTH section: an "allow_cleartext" note (what it lifts, when it is sane: network-layer-secured in-cluster links; default strict and why — backend_tls defaults to none); examples/bifrost.hcl commented lines in both auth blocks.
+- [x] **Step 6: Commit** — `git commit -am "feat: allow_cleartext opt-in for auth on both legs"`

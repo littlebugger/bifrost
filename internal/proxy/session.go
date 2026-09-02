@@ -592,11 +592,12 @@ func (s *Session) capabilities() []string {
 			out = append(out, c)
 		}
 	}
-	// AUTH is post-TLS only (RFC 4954 strict-PLAIN, decision above): it
-	// never appears on the tlsOffered() early-return path above, only
-	// once TLS is actually active, and only until the client has
-	// authenticated.
-	if s.cfg.Listener.Auth != nil && s.tlsActive && !s.authed {
+	// AUTH is post-TLS only (RFC 4954 strict-PLAIN, decision above), unless
+	// Auth.AllowCleartext opts out for a network-layer-secured link: it
+	// never appears on the tlsOffered() early-return path above, only once
+	// TLS is actually active (or the knob allows cleartext), and only
+	// until the client has authenticated.
+	if s.cfg.Listener.Auth != nil && (s.tlsActive || s.cfg.Listener.Auth.AllowCleartext) && !s.authed {
 		out = append(out, "AUTH PLAIN")
 	}
 	return out

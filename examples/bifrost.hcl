@@ -69,6 +69,7 @@ listener {
   #     salt            = "1af90c3e2b7ad4f1"
   #     hashed_password = "466aec5e9c8096eb07b86d055773ea4267b548c25831c6d56a5c8ff7f5497977"
   #   }
+  #   # allow_cleartext = true  # only for a link already secured at the network layer (e.g. in-cluster k8s) -- lifts the starttls requirement and the 538 gate
   # }
 }
 
@@ -127,6 +128,7 @@ pool "bulk" {
   #   username = "rttskr-team"
   #   password = "pa55w0rd"
   #   # password_file = "/var/run/secrets/smtp/password"  # alternative to password (e.g. a k8s Secret mount); exactly one of the two
+  #   # allow_cleartext = true  # only for a link already secured at the network layer (e.g. in-cluster k8s) -- lifts the backend_tls != "none" requirement
   # }
 }
 

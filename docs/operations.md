@@ -440,6 +440,39 @@ the relay and the health prober re-read credentials off the config
 holder on every transaction/probe, so a rotated backend password applies
 at the next `MAIL`, no restart needed.
 
+### `allow_cleartext`: opting out of the TLS requirement
+
+Both `listener.auth` and `pool.auth` accept `allow_cleartext = true`
+(default `false`), independently — one leg can set it without the other.
+It lifts, for that block only:
+
+- `listener.auth`: the "client auth requires starttls" load error, the
+  pre-TLS `AUTH PLAIN` advertisement suppression, and the client-leg
+  `538 5.7.11` gate — `AUTH PLAIN` is then advertised and accepted on a
+  plaintext session.
+- `pool.auth`: the "pool auth requires backend TLS" and "pool auth
+  requires TLS probes" load errors, and `backend.Dial`'s refusal to send
+  `AUTH PLAIN` before a TLS upgrade.
+
+```hcl
+auth {
+  allow_cleartext = true
+  # ... users / username+password as usual
+}
+```
+
+This is only sane when the link is already secured below SMTP — a
+same-namespace or same-mesh in-cluster Kubernetes hop, for example, where
+the SMTP TLS handshake would just be redundant encryption on top of the
+network layer's own. It is not a substitute for TLS on a link that
+crosses a trust boundary the network layer doesn't already cover.
+
+The default stays strict on purpose: `backend_tls` itself defaults to
+`"none"`, so if `allow_cleartext` also defaulted to `true`, a forgotten
+`backend_tls` line on a pool with `auth` configured would silently leak
+credentials in cleartext instead of failing to load. The knob has to be
+written down in the config file, where an auditor will see it.
+
 ### Client leg: `listener.auth`
 
 ```hcl

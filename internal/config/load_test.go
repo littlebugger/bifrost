@@ -203,6 +203,35 @@ func TestLoadAuth(t *testing.T) {
 	if outgoing.ReuseEnvelopes != 50 {
 		t.Errorf("pool outgoing ReuseEnvelopes = %d, want 50", outgoing.ReuseEnvelopes)
 	}
+	if la.AllowCleartext {
+		t.Errorf("Listener.Auth.AllowCleartext = true, want false (default, no knob set)")
+	}
+	if outgoing.Auth.AllowCleartext {
+		t.Errorf("pool auth AllowCleartext = true, want false (default, no knob set)")
+	}
+}
+
+// TestLoadAuthCleartext proves allow_cleartext decodes true on both auth
+// legs, and that the pool's copy of the knob into CheckParams (the same
+// path AuthUsername/AuthPassword take, see resolvePoolAuth) reaches the
+// probe layer too. auth-cleartext.hcl pairs the knob with what would
+// otherwise be load errors (no starttls block, backend_tls = "none") —
+// loading clean at all proves both guards were actually lifted.
+func TestLoadAuthCleartext(t *testing.T) {
+	cfg := mustLoad(t, "testdata/auth-cleartext.hcl")
+	if cfg.Listener.Auth == nil || !cfg.Listener.Auth.AllowCleartext {
+		t.Fatalf("Listener.Auth = %+v, want AllowCleartext = true", cfg.Listener.Auth)
+	}
+	outgoing := poolNamed(cfg.Pools, "outgoing")
+	if outgoing == nil || outgoing.Auth == nil || !outgoing.Auth.AllowCleartext {
+		t.Fatalf("pool auth = %+v, want AllowCleartext = true", outgoing)
+	}
+	if !outgoing.Check.AuthAllowCleartext {
+		t.Errorf("pool Check.AuthAllowCleartext = false, want true (resolved from pool.auth like AuthUsername/AuthPassword)")
+	}
+	if len(outgoing.Servers) == 0 || !outgoing.Servers[0].Check.AuthAllowCleartext {
+		t.Errorf("server Check.AuthAllowCleartext = false, want true")
+	}
 }
 
 // TestLoadAuthPasswordFile proves password_file resolves relative to the

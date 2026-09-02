@@ -96,6 +96,13 @@ type CheckParams struct {
 	AuthUsername string
 	AuthPassword string
 
+	// AuthAllowCleartext mirrors PoolAuth.AllowCleartext (resolved the same
+	// way as AuthUsername/AuthPassword, see resolvePoolAuth): lets the probe
+	// ladder originate AUTH PLAIN over a non-TLS-upgraded connection, for a
+	// pool whose backend_tls is "none" because the link is already secured
+	// at the network layer.
+	AuthAllowCleartext bool
+
 	rng hcl.Range
 	// fieldRanges anchors level/port/interval/down_interval/timeout/
 	// rise/fall at their own attribute, the way Timeouts.fieldRanges
@@ -141,6 +148,13 @@ type StartTLS struct {
 type ListenerAuth struct {
 	Users []AuthUser
 
+	// AllowCleartext lifts the "client auth requires starttls" load error
+	// and the client-leg 538 gate for this listener: AUTH PLAIN is then
+	// advertised and accepted on plaintext sessions too. Default false —
+	// for links secured at the network layer (in-cluster k8s) only; see
+	// docs/operations.md's SMTP AUTH section.
+	AllowCleartext bool
+
 	rng hcl.Range
 }
 
@@ -170,6 +184,13 @@ type PoolAuth struct {
 	Username     string
 	Password     string
 	PasswordFile string
+
+	// AllowCleartext lifts the "pool auth requires backend TLS" and "pool
+	// auth requires TLS probes" load errors and backend.Dial's cleartext-
+	// AUTH refusal for this pool. Default false — for links secured at the
+	// network layer (in-cluster k8s) only; see docs/operations.md's SMTP
+	// AUTH section.
+	AllowCleartext bool
 
 	rng               hcl.Range
 	passwordFileRange hcl.Range // anchors password_file diagnostics at the attribute itself

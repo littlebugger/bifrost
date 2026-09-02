@@ -50,7 +50,8 @@ func verifyPlain(users []config.AuthUser, authcid, password string) bool {
 // verifies the client itself and never relays anything AUTH-related to a
 // backend. PLAIN (RFC 4616) is the only mechanism, and only over TLS —
 // strict, so it never runs in cleartext regardless of what the client
-// negotiated capabilities imply.
+// negotiated capabilities imply — unless the listener opted into
+// AllowCleartext for a link secured at the network layer instead.
 func (s *Session) auth(ctx context.Context, args []byte) (stop bool, err error) {
 	if s.cfg.Listener.Auth == nil {
 		return false, s.write(RplNotImplemented) // decision D6 unchanged when not configured
@@ -58,7 +59,7 @@ func (s *Session) auth(ctx context.Context, args []byte) (stop bool, err error) 
 	if !s.greeted || s.authed {
 		return false, s.write(RplBadSequence)
 	}
-	if !s.tlsActive {
+	if !s.tlsActive && !s.cfg.Listener.Auth.AllowCleartext {
 		return false, s.write(RplAuthEncryption) // strict: PLAIN never in cleartext
 	}
 

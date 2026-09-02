@@ -59,10 +59,15 @@ type Opts struct {
 	// the pool's own credentials, not the client's (this is a fresh,
 	// balancer-owned exchange with the backend, not a splice of anything
 	// the client sent). Dial refuses outright, before any AUTH bytes, if
-	// TLSMode is empty or "none" — credentials never cross the wire
-	// before a TLS upgrade (see Dial).
+	// TLSMode is empty or "none", unless AuthAllowCleartext opts out for a
+	// pool whose link is secured at the network layer instead (see Dial).
 	AuthUsername string
 	AuthPassword string
+
+	// AuthAllowCleartext lifts Dial's refusal to send AUTH PLAIN over a
+	// connection that was not TLS-upgraded. Default false; comes from the
+	// pool auth block's allow_cleartext knob.
+	AuthAllowCleartext bool
 }
 
 // Conn is one balancer->backend connection, past the handshake.
@@ -156,8 +161,10 @@ func Dial(ctx context.Context, srv *config.Server, opts Opts) (*Conn, error) {
 		// block paired with backend_tls = "none" (and, since this fix
 		// wave, a check that resolves tls = "none" too), but Dial refuses
 		// on its own rather than trust every caller got that right —
-		// credentials must never reach the wire before a TLS upgrade.
-		if opts.TLSMode == "" || opts.TLSMode == "none" {
+		// credentials must never reach the wire before a TLS upgrade,
+		// unless AuthAllowCleartext opts out for a network-layer-secured
+		// link.
+		if (opts.TLSMode == "" || opts.TLSMode == "none") && !opts.AuthAllowCleartext {
 			_ = c.conn.Close()
 			return nil, &HandshakeError{
 				Addr: c.addr, Stage: "auth",

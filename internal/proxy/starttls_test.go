@@ -224,6 +224,35 @@ func TestSessionAuthRequiresTLS538(t *testing.T) {
 	c.expect("538 5.7.11 Encryption required for requested authentication mechanism")
 }
 
+// TestSessionAuthAllowCleartext is TestSessionAuthRequiresTLS538's mirror
+// with the allow_cleartext knob on and NO starttls block at all (the
+// scenario the knob exists for: a link secured at the network layer, e.g.
+// in-cluster k8s, where TLS on the SMTP hop itself is redundant). Both the
+// pre-TLS advertisement suppression and the 538 gate must be lifted: EHLO
+// shows AUTH PLAIN before any upgrade, and AUTH PLAIN succeeds outright.
+func TestSessionAuthAllowCleartext(t *testing.T) {
+	cfg := testConfig()
+	cfg.Listener.Auth = &config.ListenerAuth{
+		Users:          []config.AuthUser{testAuthUser("rttskr-team", "s1", "pw")},
+		AllowCleartext: true,
+	}
+	h := &stubHandler{}
+	c := newTestClient(t, cfg, nil, h)
+	c.expect("220 bifrost.test ESMTP")
+
+	c.send("EHLO client.example")
+	c.expect("250-bifrost.test", "250-PIPELINING", "250-8BITMIME", "250-SIZE 10485760", "250 AUTH PLAIN")
+
+	c.send("AUTH PLAIN " + authPlainPayload("rttskr-team", "pw"))
+	c.expect("235 2.7.0 Authentication succeeded")
+
+	c.send("MAIL FROM:<a@b>")
+	c.expect("451 4.4.1 No backend available, try again later")
+	if got := h.seen(); len(got) != 1 {
+		t.Fatalf("handler saw %d transactions, want 1", len(got))
+	}
+}
+
 // TestSessionAuthBeforeEhlo503: AUTH before any EHLO/HELO is a sequence
 // violation, same as MAIL or RCPT (TestBadSequence) — checked before the
 // TLS-encryption gate, so a configured listener still answers 503, not 538.
