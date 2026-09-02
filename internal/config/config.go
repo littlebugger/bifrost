@@ -205,7 +205,7 @@ type Pool struct {
 	BackendTLSCA         string
 	EhloName             string // resolved: pool -> defaults.ehlo_name -> listener hostname
 	MaxTransactions      int    // pool-level default for servers' max_transactions
-	ReuseEnvelopes       int
+	ReuseEnvelopes       int    // 0 or 1 (default): fresh conn per envelope; N>1: session-affine reuse, capped at N envelopes per backend conn
 	Check                CheckParams
 	Servers              []Server
 	Auth                 *PoolAuth // nil: backend-leg SMTP AUTH disabled

@@ -558,6 +558,15 @@ func (s *Session) handleReadError(err error) (stop bool, _ error) {
 // back through to re-open a cleartext hole — so there is nothing a
 // forced re-auth would buy that clearing it would not just cost the
 // client a redundant round trip for.
+//
+// With listener allow_cleartext, "no downgrade path" needs a caveat: a
+// client may have authenticated over plaintext already, then reset
+// straight into a later STARTTLS upgrade, and authed still survives —
+// RFC 3207's "discard any prior state" notwithstanding. That is
+// acceptable under the knob's own threat model, not a gap this reset
+// should plug: the plaintext credentials were already exposed to any
+// on-link observer the moment AUTH ran, so re-arming TLS after the fact
+// protects nothing STARTTLS's state-discard was meant to protect.
 func (s *Session) reset() {
 	s.greeted, s.helo, s.mailSeen = false, "", false
 }
