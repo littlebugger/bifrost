@@ -128,6 +128,61 @@ func (l *leaseCounter) state() (open, total int) {
 	return l.open, l.total
 }
 
+// leaseGate is the reuse tests' lease-denial stand-in: it denies every
+// lease while held is true (a simulated concurrent holder pinning the
+// pool's one max_transactions slot) and grants otherwise. Unlike
+// leaseCounter there is no capacity model, just the one on/off switch
+// TestReuseLeaseDenialRetainsCache needs.
+type leaseGate struct {
+	mu   sync.Mutex
+	held bool
+}
+
+func (g *leaseGate) setHeld(held bool) {
+	g.mu.Lock()
+	g.held = held
+	g.mu.Unlock()
+}
+
+func (g *leaseGate) lease(*config.Server) func() {
+	g.mu.Lock()
+	held := g.held
+	g.mu.Unlock()
+	if held {
+		return nil
+	}
+	return func() {}
+}
+
+// reuseMetrics records BackendReuse outcomes only — every other Metrics
+// method is the shared no-op every other fixture already gets from
+// noMetrics. The reuse tests need "reused"/"capped" counts; nothing else
+// in the interface matters to them.
+type reuseMetrics struct {
+	noMetrics
+	mu     sync.Mutex
+	events []string // "server:outcome", in call order
+}
+
+func (m *reuseMetrics) BackendReuse(server, outcome string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, server+":"+outcome)
+}
+
+// count returns how many BackendReuse calls recorded outcome, any server.
+func (m *reuseMetrics) count(outcome string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, e := range m.events {
+		if strings.HasSuffix(e, ":"+outcome) {
+			n++
+		}
+	}
+	return n
+}
+
 // relayFixture is a client talking to a real Session whose TxnHandler is
 // a real Relay: the whole client leg plus the splice, with fakesmtp
 // backends at the far end.
@@ -190,13 +245,28 @@ func newRelayClientLog(t *testing.T, cfg *config.Config, lg *slog.Logger) *relay
 // config holds (a reload between the pick and the dial).
 func newRelayClientPick(t *testing.T, cfg *config.Config, lg *slog.Logger, servers []*config.Server) *relayFixture {
 	t.Helper()
+	return newRelayClientPickMetrics(t, cfg, lg, servers, nil)
+}
+
+// newRelayClientPickMetrics is newRelayClientPick with an explicit
+// Metrics override: the reuse tests need to observe BackendReuse calls,
+// which no other fixture constructor exposes a way to do. nil keeps
+// today's default (NewRelay's own variadic optional-argument handling
+// falls back to noMetrics).
+func newRelayClientPickMetrics(t *testing.T, cfg *config.Config, lg *slog.Logger, servers []*config.Server, metrics Metrics) *relayFixture {
+	t.Helper()
 	h := &config.Holder{}
 	h.Swap(cfg)
 	sig := &stubSignals{}
 	leases := &leaseCounter{}
 	picks := &pickStub{servers: servers}
 
-	r := NewRelay(picks.pick, h, lg, sig, leases.lease)
+	var r *Relay
+	if metrics != nil {
+		r = NewRelay(picks.pick, h, lg, sig, leases.lease, metrics)
+	} else {
+		r = NewRelay(picks.pick, h, lg, sig, leases.lease)
+	}
 	c := newTestClient(t, cfg, nil, r)
 	f := &relayFixture{testClient: c, sig: sig, leases: leases, picks: picks}
 	f.expect("220 bifrost.test ESMTP")
@@ -398,4 +468,302 @@ func TestRelayBackendAuth(t *testing.T) {
 		"MAIL FROM:<a@b.example>\r\n",
 		"RCPT TO:<one@c.example>\r\n",
 	)
+}
+
+// sendOneEnvelope drives one full MAIL..DATA envelope to completion over
+// f, asserting the client sees today's happy-path replies. Shared by the
+// reuse tests below, which only differ in what they check afterward.
+//
+// The trailing NOOP round-trip is TestDetachAfterVerdict's own technique:
+// the verdict reaches the client from the reply-pump goroutine before
+// detachOrStash/detach necessarily runs on the txn goroutine (R4's
+// ordering), so a caller that checked backend-side state (a QUIT sent, a
+// dial count) right after the verdict would be racing it. NOOP is
+// answered from the same goroutine, sequentially after detach — one
+// round trip with the session proves detach has already run.
+func sendOneEnvelope(f *relayFixture, from string) {
+	f.send("MAIL FROM:<" + from + "@b.example>")
+	f.expect("250 2.1.0 OK")
+	f.send("RCPT TO:<c@d.example>")
+	f.expect("250 2.1.5 OK")
+	f.send("DATA")
+	f.expect("354 Start mail input; end with <CRLF>.<CRLF>")
+	f.raw("body " + from + "\r\n.\r\n")
+	f.expect("250 2.0.0 OK: queued")
+	f.send("NOOP")
+	f.expect("250 2.0.0 OK")
+}
+
+// TestReuseStashKeepsConnOpen is task-3 scenario 1: a pool with
+// reuse_envelopes > 1 stashes a leg that finished its envelope cleanly
+// instead of QUITing it. Reuse itself (picking the stashed leg back up
+// for the session's next envelope) is Task 4 — here only the stash side
+// is observable: no QUIT went out, and nothing dialed again.
+func TestReuseStashKeepsConnOpen(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 2
+	f := newRelayClient(t, cfg)
+
+	sendOneEnvelope(f, "one")
+
+	if got := srv.DialCount(); got != 1 {
+		t.Errorf("DialCount = %d, want 1: the leg is stashed, not re-dialed", got)
+	}
+	if got := srv.CmdCount("QUIT"); got != 0 {
+		t.Errorf("backend QUIT count = %d, want 0: a stashed leg is not QUIT", got)
+	}
+}
+
+// TestReuseSessionEndClosesStashedConn is task-3 scenario 2: a leg
+// stashed on the session's affinity slot must not outlive the session.
+// The fake sets no read deadline of its own on an accepted connection
+// (see fakesmtp's TestStopRacesSetUp), so Stop's wg.Wait hangs forever on
+// a per-connection goroutine still blocked reading a leg Bifrost never
+// closed — a bounded wait turns a leaked leg into a clean failure instead
+// of stalling the suite, the same technique fakesmtp's own tests use to
+// prove a connection was actually closed.
+func TestReuseSessionEndClosesStashedConn(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 2
+	f := newRelayClient(t, cfg)
+
+	sendOneEnvelope(f, "one")
+
+	f.send("QUIT")
+	f.expect("221 2.0.0 Bye")
+	f.expectClosed()
+
+	done := make(chan struct{})
+	go func() { srv.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stashed backend leg was not closed on session end")
+	}
+}
+
+// TestReuseEnvelopesZeroRegression pins today's behavior when reuse is
+// not configured (the zero value, disabled): the leg is politely QUIT
+// after a clean verdict exactly as before this task.
+func TestReuseEnvelopesZeroRegression(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	f := newRelayClient(t, relayConfig(srv.Addr())) // ReuseEnvelopes: 0
+
+	sendOneEnvelope(f, "one")
+
+	if got := srv.CmdCount("QUIT"); got != 1 {
+		t.Errorf("backend QUIT count = %d, want 1: reuse_envelopes=0 keeps today's polite close", got)
+	}
+}
+
+// TestReuseSecondStashDoesNotLeakFirst guards the double-stash path Task
+// 4 introduces: once attachAndRelay itself can consume the session's
+// affinity slot, a second envelope in a row on the same leg goes through
+// stash() again too — this proves the consume-then-restash round trip
+// (tryReuse's own clear of the slot, stash()'s pre-existing closeIfAny)
+// does not double-process or orphan the connection.
+//
+// reuse_envelopes=3 keeps both envelopes under the cap so both take the
+// stash path — a k==N envelope caps and QUITs instead of stashing, which
+// is TestReuseCapRollover's job, not this one — and Server.Stop below
+// hangs forever on a leaked leg (fakesmtp sets no read deadline), which
+// is exactly what makes it a real regression check and not a vacuous one.
+func TestReuseSecondStashDoesNotLeakFirst(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 3
+	f := newRelayClient(t, cfg)
+
+	sendOneEnvelope(f, "one")
+	sendOneEnvelope(f, "two")
+
+	if got := srv.DialCount(); got != 1 {
+		t.Fatalf("DialCount = %d, want 1: envelope 2 reuses envelope 1's leg instead of dialing fresh", got)
+	}
+
+	f.send("QUIT")
+	f.expect("221 2.0.0 Bye")
+	f.expectClosed()
+
+	done := make(chan struct{})
+	go func() { srv.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stashed backend leg was never closed: the second stash leaked it")
+	}
+}
+
+// TestReuseHappyPathAcrossEnvelopes is Task 4 scenario 1: three envelopes
+// on a pool with reuse_envelopes=3 all share the one leg envelope 1
+// dialed, each later envelope preceded by a revalidation RSET the client
+// never sees, and the third envelope's clean finish hits the cap.
+func TestReuseHappyPathAcrossEnvelopes(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 3
+	m := &reuseMetrics{}
+	f := newRelayClientPickMetrics(t, cfg, slog.New(slog.DiscardHandler), serversOf(cfg), m)
+
+	sendOneEnvelope(f, "one")
+	sendOneEnvelope(f, "two")
+	sendOneEnvelope(f, "three")
+
+	if got := srv.DialCount(); got != 1 {
+		t.Errorf("DialCount = %d, want 1: all three envelopes share one dialed leg", got)
+	}
+	if got := srv.CmdCount("RSET"); got != 2 {
+		t.Errorf("backend RSET count = %d, want 2: one revalidation before envelope 2, one before envelope 3", got)
+	}
+	if got := m.count("reused"); got != 2 {
+		t.Errorf(`BackendReuse("reused") = %d, want 2: envelopes 2 and 3 each reused the cached leg`, got)
+	}
+	if got := m.count("capped"); got != 1 {
+		t.Errorf(`BackendReuse("capped") = %d, want 1: envelope 3 hit reuse_envelopes=3 and the leg was closed after it`, got)
+	}
+}
+
+// TestReuseCapRollover is Task 4 scenario 2: reuse_envelopes=2 caps the
+// reused leg after envelope 2, and envelope 3 dials fresh again — a
+// second cycle starting, not a leak or a wedge.
+func TestReuseCapRollover(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 2
+	m := &reuseMetrics{}
+	f := newRelayClientPickMetrics(t, cfg, slog.New(slog.DiscardHandler), serversOf(cfg), m)
+
+	sendOneEnvelope(f, "one")
+	sendOneEnvelope(f, "two")
+	sendOneEnvelope(f, "three")
+
+	if got := srv.DialCount(); got != 2 {
+		t.Errorf("DialCount = %d, want 2: envelope 2 caps the first leg, envelope 3 dials fresh", got)
+	}
+	if got := m.count("reused"); got != 1 {
+		t.Errorf(`BackendReuse("reused") = %d, want 1: only envelope 2 reused the first leg`, got)
+	}
+	if got := m.count("capped"); got != 1 {
+		t.Errorf(`BackendReuse("capped") = %d, want 1: envelope 2 hit the cap`, got)
+	}
+}
+
+// TestReuseDeadCachedConnFailsOverTransparently is Task 4 scenario 3: the
+// cached leg dies between envelopes (simulated here as dying to the
+// revalidation RSET itself — the fake has no way to sever an established
+// connection any earlier, and the effect on this test is identical
+// either way: the leg fails before it ever reaches the client). The
+// primary is also taken down for new dials, so envelope 2's failure
+// really is invisible to the client only if the walk fails over to a
+// second, healthy candidate.
+func TestReuseDeadCachedConnFailsOverTransparently(t *testing.T) {
+	primary := relayFake(t, fakesmtp.Script{
+		OnRSET: []fakesmtp.Step{{Action: fakesmtp.ActDropConn}},
+	})
+	secondary := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(primary.Addr(), secondary.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 3
+	f := newRelayClient(t, cfg)
+
+	sendOneEnvelope(f, "one") // dials and stashes primary's leg
+
+	primary.SetDown(fakesmtp.DownListenerClosed) // no fresh dial to primary either
+
+	sendOneEnvelope(f, "two") // revalidation kills the cached leg; transparent failover to secondary
+
+	if got := primary.DialCount(); got != 1 {
+		t.Errorf("primary DialCount = %d, want 1: never re-dialed once it went down", got)
+	}
+	if got := secondary.DialCount(); got != 1 {
+		t.Errorf("secondary DialCount = %d, want 1: envelope 2 fails over to it", got)
+	}
+}
+
+// TestReuseServerMismatchDialsFreshNoReuseMetric is Task 4 scenario 4: the
+// router's pick moves to a different server between envelopes (weighted
+// or round-robin balance), so the cached leg's server no longer matches
+// candidates[0] and reuse is skipped outright — envelope 2 dials the new
+// server fresh, and the stale cached leg is left for stash()'s own
+// closeIfAny to clean up the next time this session stashes (no proactive
+// close needed in the reuse path itself).
+func TestReuseServerMismatchDialsFreshNoReuseMetric(t *testing.T) {
+	s1 := relayFake(t, fakesmtp.Script{})
+	s2 := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(s1.Addr(), s2.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 3
+	m := &reuseMetrics{}
+	h := &config.Holder{}
+	h.Swap(cfg)
+	sig := &stubSignals{}
+	leases := &leaseCounter{}
+	picks := &pickStub{servers: serversOf(cfg), rr: true}
+	r := NewRelay(picks.pick, h, slog.New(slog.DiscardHandler), sig, leases.lease, m)
+	c := newTestClient(t, cfg, nil, r)
+	f := &relayFixture{testClient: c, sig: sig, leases: leases, picks: picks}
+	f.expect("220 bifrost.test ESMTP")
+	f.send("EHLO client.example")
+	f.reply()
+
+	sendOneEnvelope(f, "one") // pick is [s1, s2]: dials and stashes s1
+
+	sendOneEnvelope(f, "two") // pick rotates to [s2, s1]: candidates[0] != cached s1, no reuse
+
+	if got := s1.DialCount(); got != 1 {
+		t.Errorf("s1 DialCount = %d, want 1: envelope 1's own dial only", got)
+	}
+	if got := s2.DialCount(); got != 1 {
+		t.Errorf("s2 DialCount = %d, want 1: envelope 2 dials the new pick fresh", got)
+	}
+	if got := m.count("reused"); got != 0 {
+		t.Errorf(`BackendReuse("reused") = %d, want 0: the candidate pointer changed, so reuse is skipped`, got)
+	}
+}
+
+// TestReuseLeaseDenialRetainsCache is Task 4 scenario 5: a lease denial
+// on the reuse attempt must not lose the cached leg. The spec prefers
+// the conn stay cached for a later envelope once whatever was holding
+// the pool's slot lets go — proved here by envelope 3 reusing the very
+// same leg envelope 1 dialed, with no dial of its own between it and
+// envelope 2's own saturated attempt.
+func TestReuseLeaseDenialRetainsCache(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{})
+	cfg := relayConfig(srv.Addr())
+	cfg.Pools[0].ReuseEnvelopes = 3
+	m := &reuseMetrics{}
+	h := &config.Holder{}
+	h.Swap(cfg)
+	sig := &stubSignals{}
+	gate := &leaseGate{}
+	picks := &pickStub{servers: serversOf(cfg)}
+	r := NewRelay(picks.pick, h, slog.New(slog.DiscardHandler), sig, gate.lease, m)
+	c := newTestClient(t, cfg, nil, r)
+	f := &relayFixture{testClient: c, sig: sig, picks: picks}
+	f.expect("220 bifrost.test ESMTP")
+	f.send("EHLO client.example")
+	f.reply()
+
+	sendOneEnvelope(f, "one") // dials and stashes the one leg
+
+	gate.setHeld(true) // a concurrent transaction now holds the pool's slot
+
+	f.send("MAIL FROM:<two@b.example>")
+	f.expect("451 4.3.2 All backends busy, try again later")
+	f.send("RSET")
+	f.expect("250 2.0.0 OK")
+
+	gate.setHeld(false) // the concurrent holder released
+
+	sendOneEnvelope(f, "three") // reuses envelope 1's untouched cached leg
+
+	if got := srv.DialCount(); got != 2 {
+		t.Errorf("DialCount = %d, want 2: envelope 1's own dial, plus the walk's own fresh-dial fallback when envelope 2's reuse attempt found the lease denied; envelope 3 must not dial again", got)
+	}
+	if got := srv.CmdCount("RSET"); got != 2 {
+		t.Errorf("backend RSET count = %d, want 2: revalidation before envelope 2's (denied) reuse attempt and before envelope 3's (granted) one", got)
+	}
+	if got := m.count("reused"); got != 1 {
+		t.Errorf(`BackendReuse("reused") = %d, want 1: only envelope 3 actually reused the cache`, got)
+	}
 }

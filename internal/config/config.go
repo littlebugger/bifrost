@@ -96,6 +96,13 @@ type CheckParams struct {
 	AuthUsername string
 	AuthPassword string
 
+	// AuthAllowCleartext mirrors PoolAuth.AllowCleartext (resolved the same
+	// way as AuthUsername/AuthPassword, see resolvePoolAuth): lets the probe
+	// ladder originate AUTH PLAIN over a non-TLS-upgraded connection, for a
+	// pool whose backend_tls is "none" because the link is already secured
+	// at the network layer.
+	AuthAllowCleartext bool
+
 	rng hcl.Range
 	// fieldRanges anchors level/port/interval/down_interval/timeout/
 	// rise/fall at their own attribute, the way Timeouts.fieldRanges
@@ -141,6 +148,13 @@ type StartTLS struct {
 type ListenerAuth struct {
 	Users []AuthUser
 
+	// AllowCleartext lifts the "client auth requires starttls" load error
+	// and the client-leg 538 gate for this listener: AUTH PLAIN is then
+	// advertised and accepted on plaintext sessions too. Default false —
+	// for links secured at the network layer (in-cluster k8s) only; see
+	// docs/operations.md's SMTP AUTH section.
+	AllowCleartext bool
+
 	rng hcl.Range
 }
 
@@ -171,6 +185,13 @@ type PoolAuth struct {
 	Password     string
 	PasswordFile string
 
+	// AllowCleartext lifts the "pool auth requires backend TLS" and "pool
+	// auth requires TLS probes" load errors and backend.Dial's cleartext-
+	// AUTH refusal for this pool. Default false — for links secured at the
+	// network layer (in-cluster k8s) only; see docs/operations.md's SMTP
+	// AUTH section.
+	AllowCleartext bool
+
 	rng               hcl.Range
 	passwordFileRange hcl.Range // anchors password_file diagnostics at the attribute itself
 }
@@ -184,6 +205,7 @@ type Pool struct {
 	BackendTLSCA         string
 	EhloName             string // resolved: pool -> defaults.ehlo_name -> listener hostname
 	MaxTransactions      int    // pool-level default for servers' max_transactions
+	ReuseEnvelopes       int    // 0 or 1 (default): fresh conn per envelope; N>1: session-affine reuse, capped at N envelopes per backend conn
 	Check                CheckParams
 	Servers              []Server
 	Auth                 *PoolAuth // nil: backend-leg SMTP AUTH disabled
@@ -198,7 +220,8 @@ type Pool struct {
 	rng     hcl.Range
 	caRange hcl.Range // anchors backend_tls_ca diagnostics at the attribute itself
 
-	maxTxnRange hcl.Range // set only when this tier wrote max_transactions itself
+	maxTxnRange         hcl.Range // set only when this tier wrote max_transactions itself
+	reuseEnvelopesRange hcl.Range // set only when this tier wrote reuse_envelopes itself
 }
 
 // Server is one backend destination within a Pool.

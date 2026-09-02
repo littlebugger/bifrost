@@ -110,7 +110,8 @@ type rawListener struct {
 type rawListenerAuth struct {
 	Range hcl.Range `hcl:",def_range"`
 
-	Users []rawAuthUser `hcl:"user,block"`
+	AllowCleartext bool          `hcl:"allow_cleartext,optional"`
+	Users          []rawAuthUser `hcl:"user,block"`
 }
 
 type rawAuthUser struct {
@@ -132,6 +133,7 @@ type rawPoolAuth struct {
 	Password          string    `hcl:"password,optional"`
 	PasswordFile      string    `hcl:"password_file,optional"`
 	PasswordFileRange hcl.Range `hcl:"password_file,attr_range"`
+	AllowCleartext    bool      `hcl:"allow_cleartext,optional"`
 }
 
 type rawServer struct {
@@ -159,6 +161,8 @@ type rawPool struct {
 	EhloName             string       `hcl:"ehlo_name,optional"`
 	MaxTransactions      *int         `hcl:"max_transactions"`
 	MaxTransactionsRange hcl.Range    `hcl:"max_transactions,attr_range"`
+	ReuseEnvelopes       *int         `hcl:"reuse_envelopes,optional"`
+	ReuseEnvelopesRange  hcl.Range    `hcl:"reuse_envelopes,attr_range"`
 	Check                *rawCheck    `hcl:"check,block"`
 	Servers              []rawServer  `hcl:"server,block"`
 	Auth                 *rawPoolAuth `hcl:"auth,block"`

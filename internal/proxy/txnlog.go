@@ -38,6 +38,12 @@ type txnRecord struct {
 
 	synth         string // the synthesized reply's trimmed text, if the transaction's conclusion was Bifrost's own rather than relayed
 	duplicateRisk bool
+
+	// connEnvelope is this attached conn's envelope ordinal: 1 for a
+	// fresh dial, k > 1 for the k-th envelope on a reused one (Task 4).
+	// 0 means nothing ever attached — emitLog omits the field entirely
+	// then, rather than log a misleading 0.
+	connEnvelope int
 }
 
 // observe classifies one command's own reply (relayed or, via latchWith,
@@ -100,7 +106,7 @@ func trimReply(s string) string {
 // the transaction concluded.
 func (t *txn) emitLog() {
 	r := &t.record
-	t.r.lg.Info("transaction",
+	args := []any{
 		"client", t.tx.ClientIP.String(),
 		"helo", t.tx.Helo,
 		"authn", r.authn,
@@ -115,5 +121,9 @@ func (t *txn) emitLog() {
 		"failover_attempts", r.failoverAttempts,
 		"synth", r.synth,
 		"duplicate_risk", r.duplicateRisk,
-	)
+	}
+	if r.connEnvelope > 0 {
+		args = append(args, "conn_envelope", r.connEnvelope)
+	}
+	t.r.lg.Info("transaction", args...)
 }

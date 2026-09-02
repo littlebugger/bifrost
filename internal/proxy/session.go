@@ -95,6 +95,14 @@ type Txn struct {
 	// deferred is a command line the handler read but deliberately did
 	// not answer; see leaveForSession.
 	deferred []byte
+
+	// affinity points at the owning Session's one reuse slot (attach.go's
+	// backendAffinity): set in mail() so a TxnHandler can stash a leg
+	// that finished its envelope cleanly instead of closing it. nil for a
+	// hand-built Txn outside a real session (tests), in which case
+	// detachOrStash's stash path is simply never reached (no reuse pool
+	// configured).
+	affinity *backendAffinity
 }
 
 // leaveForSession hands one already-read command line back to the
@@ -167,6 +175,13 @@ type Session struct {
 	authed    bool
 	authnID   string
 	authFails int
+
+	// affinity is this session's one backend-reuse slot (attach.go): a
+	// leg a transaction stashed instead of closing, handed to every Txn
+	// this session opens (see mail) so a TxnHandler can read or fill it.
+	// It lives and dies with the session (Run's defer), never crossing to
+	// another client connection.
+	affinity backendAffinity
 }
 
 // NewSession wraps an accepted client connection. tlsCfg carries the
@@ -197,6 +212,11 @@ func NewSession(conn net.Conn, cfg *config.Config, tlsCfg *tls.Config, h TxnHand
 // when the connection failed in a way the session could not answer.
 func (s *Session) Run(ctx context.Context) error {
 	defer func() { _ = s.conn.Close() }()
+	// A cached leg is only ever stashed at a command boundary (never
+	// mid-message — see backendAffinity.closeIfAny), so it is never in
+	// the drain-sensitive state CloseLegs exists for; it just needs to
+	// not outlive the session that cached it.
+	defer s.affinity.closeIfAny()
 
 	if d := s.timeouts().SessionMax; d > 0 {
 		s.expiry = time.Now().Add(d)
@@ -350,6 +370,7 @@ func (s *Session) mail(ctx context.Context, raw []byte) (stop bool, err error) {
 		R:         s.br,
 		W:         s.bw,
 		conn:      s.conn,
+		affinity:  &s.affinity,
 	}
 	s.h.HandleTransaction(ctx, tx)
 	// The handler is expected to flush its own replies; flushing again
@@ -537,6 +558,15 @@ func (s *Session) handleReadError(err error) (stop bool, _ error) {
 // back through to re-open a cleartext hole — so there is nothing a
 // forced re-auth would buy that clearing it would not just cost the
 // client a redundant round trip for.
+//
+// With listener allow_cleartext, "no downgrade path" needs a caveat: a
+// client may have authenticated over plaintext already, then reset
+// straight into a later STARTTLS upgrade, and authed still survives —
+// RFC 3207's "discard any prior state" notwithstanding. That is
+// acceptable under the knob's own threat model, not a gap this reset
+// should plug: the plaintext credentials were already exposed to any
+// on-link observer the moment AUTH ran, so re-arming TLS after the fact
+// protects nothing STARTTLS's state-discard was meant to protect.
 func (s *Session) reset() {
 	s.greeted, s.helo, s.mailSeen = false, "", false
 }
@@ -563,6 +593,16 @@ func (s *Session) tlsOffered() bool {
 func (s *Session) capabilities() []string {
 	caps := s.cfg.Listener.Capabilities
 	if s.tlsOffered() {
+		// allow_cleartext means "plaintext AUTH is acceptable on this
+		// listener" even when starttls is also configured — the 538 gate
+		// (auth.go) already accepts a blind AUTH here, so the
+		// advertisement must match rather than hiding it pre-upgrade.
+		// append onto a fresh backing array: caps aliases the shared
+		// config's slice, so appending in place would risk corrupting it
+		// across sessions.
+		if s.cfg.Listener.Auth != nil && s.cfg.Listener.Auth.AllowCleartext && !s.authed {
+			return append(append([]string(nil), caps...), "AUTH PLAIN")
+		}
 		return caps
 	}
 	out := make([]string, 0, len(caps))
@@ -571,11 +611,11 @@ func (s *Session) capabilities() []string {
 			out = append(out, c)
 		}
 	}
-	// AUTH is post-TLS only (RFC 4954 strict-PLAIN, decision above): it
-	// never appears on the tlsOffered() early-return path above, only
-	// once TLS is actually active, and only until the client has
-	// authenticated.
-	if s.cfg.Listener.Auth != nil && s.tlsActive && !s.authed {
+	// AUTH is post-TLS only (RFC 4954 strict-PLAIN, decision above), unless
+	// Auth.AllowCleartext opts out for a network-layer-secured link — same
+	// condition as the tlsOffered() branch above, applied here once TLS is
+	// actually active, and only until the client has authenticated.
+	if s.cfg.Listener.Auth != nil && (s.tlsActive || s.cfg.Listener.Auth.AllowCleartext) && !s.authed {
 		out = append(out, "AUTH PLAIN")
 	}
 	return out

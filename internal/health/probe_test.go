@@ -421,6 +421,32 @@ func TestProbeAuthRefusesCleartext(t *testing.T) {
 	}
 }
 
+// TestProbeAuthAllowsCleartext is TestProbeAuthRefusesCleartext's mirror
+// with AuthAllowCleartext set: creds plus params.TLS = "none" now succeed
+// against a fake (no TLS) advertising AUTH PLAIN, and the transcript shows
+// the AUTH line — mirrors backend.TestDialAuthAllowsCleartext one layer
+// down.
+func TestProbeAuthAllowsCleartext(t *testing.T) {
+	caps := append(compliantCaps(), "AUTH PLAIN")
+	srv := fakesmtp.Start(t, fakesmtp.Script{Caps: caps})
+
+	params := probeParams("ehlo")
+	params.TLS = "none"
+	params.AuthUsername = "user"
+	params.AuthPassword = "pass"
+	params.AuthAllowCleartext = true
+	res := runProbe(context.Background(), testSrv(srv.Addr()), params, compliantCaps())
+	if !res.ok {
+		t.Fatalf("ok = false, want true (reason=%q)", res.reason)
+	}
+
+	sessions := waitForSessionCount(t, srv, 1)
+	verbs := transcriptVerbs(sessions[0])
+	if !contains(verbs, "AUTH") {
+		t.Errorf("transcript verbs = %v, want AUTH present", verbs)
+	}
+}
+
 // contains reports whether needle appears in haystack.
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {

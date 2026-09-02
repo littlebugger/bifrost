@@ -43,13 +43,14 @@ import (
 type Metrics struct {
 	Registry *prometheus.Registry
 
-	sessionsActive prometheus.Gauge
-	sessionsTotal  prometheus.Counter
-	transactions   *prometheus.CounterVec
-	synthReplies   *prometheus.CounterVec
-	relayBytes     *prometheus.CounterVec
-	backendDials   *prometheus.CounterVec
-	duplicateRisk  prometheus.Counter
+	sessionsActive   prometheus.Gauge
+	sessionsTotal    prometheus.Counter
+	transactions     *prometheus.CounterVec
+	synthReplies     *prometheus.CounterVec
+	relayBytes       *prometheus.CounterVec
+	backendDials     *prometheus.CounterVec
+	backendConnReuse *prometheus.CounterVec
+	duplicateRisk    prometheus.Counter
 }
 
 // New returns a Metrics with its own private registry, every push-based
@@ -76,12 +77,15 @@ func New() *Metrics {
 		backendDials: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "bifrost_backend_dials_total", Help: "Backend dial attempts, by server and result.",
 		}, []string{"server", "result"}),
+		backendConnReuse: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "bifrost_backend_conn_reuse_total", Help: "Backend connection reuse events, by server and outcome.",
+		}, []string{"server", "outcome"}),
 		duplicateRisk: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "bifrost_duplicate_risk_total", Help: "Transactions where a backend died after the final dot but before a verdict (the duplicate-delivery window).",
 		}),
 	}
 	reg.MustRegister(m.sessionsActive, m.sessionsTotal, m.transactions,
-		m.synthReplies, m.relayBytes, m.backendDials, m.duplicateRisk)
+		m.synthReplies, m.relayBytes, m.backendDials, m.backendConnReuse, m.duplicateRisk)
 	return m
 }
 
@@ -121,6 +125,11 @@ func (m *Metrics) RelayBytes(direction string, n int) {
 
 // DuplicateRisk implements proxy.Metrics.
 func (m *Metrics) DuplicateRisk() { m.duplicateRisk.Inc() }
+
+// BackendReuse implements proxy.Metrics.
+func (m *Metrics) BackendReuse(server string, outcome string) {
+	m.backendConnReuse.WithLabelValues(server, outcome).Inc()
+}
 
 func resultLabel(ok bool) string {
 	if ok {

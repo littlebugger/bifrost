@@ -88,6 +88,44 @@ func TestDialAuthRefusesCleartext(t *testing.T) {
 	}
 }
 
+// TestDialAuthAllowsCleartext is TestDialAuthRefusesCleartext's mirror
+// with AuthAllowCleartext set: the same TLSMode "none" connection and a
+// fake that accepts AUTH PLAIN now succeeds, proving the knob — not just
+// the absence of the guard — is what lets the AUTH line reach the wire.
+func TestDialAuthAllowsCleartext(t *testing.T) {
+	srv := fakesmtp.Start(t, fakesmtp.Script{Caps: []string{"AUTH PLAIN"}})
+
+	c, err := dialTest(t, srv.Addr(), Opts{
+		EhloName:           "client.example",
+		TLSMode:            "none",
+		AuthUsername:       "user",
+		AuthPassword:       "pass",
+		AuthAllowCleartext: true,
+		Timeouts:           testTimeouts(),
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	if c == nil {
+		t.Fatal("Dial returned nil Conn with nil error")
+	}
+
+	want := "AUTH PLAIN " + base64.StdEncoding.EncodeToString([]byte("\x00user\x00pass")) + "\r\n"
+	sessions := srv.Sessions()
+	if len(sessions) != 1 {
+		t.Fatalf("Sessions() len = %d, want 1", len(sessions))
+	}
+	var got []byte
+	for _, ev := range sessions[0].Transcript() {
+		if ev.Verb == "AUTH" {
+			got = ev.Line
+		}
+	}
+	if string(got) != want {
+		t.Errorf("recorded AUTH line = %q, want %q", got, want)
+	}
+}
+
 func TestDialAuthNotAdvertised(t *testing.T) {
 	srv := fakesmtp.Start(t, fakesmtp.Script{TLS: fakesmtp.TestCert(t), Caps: []string{"PIPELINING"}})
 

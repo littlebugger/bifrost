@@ -74,6 +74,7 @@ func TestValidateDiagnostics(t *testing.T) {
 		{"pool auth password conflict", "testdata/bad-pool-auth-both-passwords.hcl", "pool auth password conflict", hcl.DiagError, 0},
 		{"pool auth password_file unreadable", "testdata/bad-pool-auth-file-unreadable.hcl", "pool auth password_file unreadable", hcl.DiagError, 0},
 		{"pool auth password_file is empty", "testdata/bad-pool-auth-file-empty.hcl", "pool auth password_file is empty", hcl.DiagError, 0},
+		{"negative reuse_envelopes", "testdata/bad-reuse-negative.hcl", "reuse_envelopes out of range", hcl.DiagError, 3},
 	}
 
 	for _, tc := range cases {

@@ -80,6 +80,18 @@ func negativeMaxTxn(value int, rng hcl.Range, what string) hcl.Diagnostics {
 		fmt.Sprintf("%s max_transactions %d must be >= 0 (0 means unlimited).", what, value))}
 }
 
+// negativeReuseEnvelopes reports a negative reuse_envelopes written at the
+// pool tier. It reports only when the value was actually set in the source
+// (rng is zero when omitted), so a single bad number produces a single
+// diagnostic anchored at the attribute.
+func negativeReuseEnvelopes(value int, rng hcl.Range) hcl.Diagnostics {
+	if value >= 0 || rng == (hcl.Range{}) {
+		return nil
+	}
+	return hcl.Diagnostics{errDiag(rng, "reuse_envelopes out of range",
+		fmt.Sprintf("reuse_envelopes %d must be >= 0.", value))}
+}
+
 func errDiag(rng hcl.Range, summary, detail string) *hcl.Diagnostic {
 	return &hcl.Diagnostic{Severity: hcl.DiagError, Summary: summary, Detail: detail, Subject: &rng}
 }
@@ -219,7 +231,8 @@ func (c *Config) validateStartTLSFiles() hcl.Diagnostics {
 // validateListenerAuth checks the listener's client-leg SMTP AUTH block.
 // A non-nil Listener.Auth is a guarantee the rest of the codebase relies
 // on: STARTTLS must be configured (credentials must never cross the wire
-// before TLS), at least one user must exist, user names must be unique,
+// before TLS) unless AllowCleartext opts out for a network-layer-secured
+// link, at least one user must exist, user names must be unique,
 // every user needs a salt, and hashed_password must be a usable
 // SHA-256 hex digest. Reuses controlCharIndex (already used for
 // hostname/capability injection) so no credential field can smuggle a
@@ -230,7 +243,7 @@ func (c *Config) validateListenerAuth() hcl.Diagnostics {
 		return nil
 	}
 	var diags hcl.Diagnostics
-	if c.Listener.StartTLS == nil {
+	if c.Listener.StartTLS == nil && !auth.AllowCleartext {
 		diags = append(diags, errDiag(fallbackRange(auth.rng, c.Listener.rng),
 			"client auth requires starttls",
 			"listener.auth is configured but the listener has no starttls block; client credentials must never be sent before TLS."))
@@ -284,8 +297,9 @@ func validHexHash(h string) bool {
 // validatePoolAuth checks a pool's backend-leg SMTP AUTH block: it must
 // only be used over an encrypted backend leg — both the traffic path
 // (backend_tls) and every health probe in the pool (check.tls, which can
-// override backend_tls per server or per pool, see resolveCheck) — and
-// username plus at least one of password/password_file must be present.
+// override backend_tls per server or per pool, see resolveCheck) — unless
+// AllowCleartext opts out for a network-layer-secured link, and username
+// plus at least one of password/password_file must be present.
 // By the time this runs, resolveBackendCAs has already turned a readable
 // password_file into Password, so this only needs to check Password —
 // password_file's own unreadable/empty/conflict cases are load-time
@@ -298,11 +312,11 @@ func validatePoolAuth(p Pool) hcl.Diagnostics {
 	}
 	var diags hcl.Diagnostics
 	rng := fallbackRange(auth.rng, p.rng)
-	if p.BackendTLS == "none" {
+	if p.BackendTLS == "none" && !auth.AllowCleartext {
 		diags = append(diags, errDiag(rng, "pool auth requires backend TLS",
 			fmt.Sprintf("pool %q sets auth but backend_tls = \"none\"; backend credentials must never be sent in cleartext.", p.Name)))
 	}
-	if checkRng, plaintext := poolHasCleartextCheck(p); plaintext {
+	if checkRng, plaintext := poolHasCleartextCheck(p); plaintext && !auth.AllowCleartext {
 		diags = append(diags, errDiag(checkRng, "pool auth requires TLS probes",
 			fmt.Sprintf("pool %q sets auth but a check resolves tls = \"none\"; probes carry the pool credentials, and a check { tls = \"none\" } override would hand them to whatever answers the cleartext EHLO.", p.Name)))
 	}
@@ -357,6 +371,7 @@ func (c *Config) validatePools() hcl.Diagnostics {
 		diags = append(diags, validatePoolBackendTLS(p)...)
 		diags = append(diags, validatePoolAuth(p)...)
 		diags = append(diags, negativeMaxTxn(p.MaxTransactions, p.maxTxnRange, "pool")...)
+		diags = append(diags, negativeReuseEnvelopes(p.ReuseEnvelopes, p.reuseEnvelopesRange)...)
 
 		seenServer := map[string]bool{}
 		for _, s := range p.Servers {

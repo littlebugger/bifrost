@@ -201,12 +201,13 @@ func probeDeep(ctx context.Context, addr string, params config.CheckParams, requ
 // the same string.
 func dialForHandshake(ctx context.Context, addr string, params config.CheckParams, requiredCaps []string) (*backend.Conn, error) {
 	opts := backend.Opts{
-		EhloName:     params.EhloName,
-		AuthUsername: params.AuthUsername,
-		AuthPassword: params.AuthPassword,
-		TLSMode:      params.TLS,
-		RequiredCaps: requiredCaps,
-		Timeouts:     probeTimeouts(params.Timeout),
+		EhloName:           params.EhloName,
+		AuthUsername:       params.AuthUsername,
+		AuthPassword:       params.AuthPassword,
+		AuthAllowCleartext: params.AuthAllowCleartext,
+		TLSMode:            params.TLS,
+		RequiredCaps:       requiredCaps,
+		Timeouts:           probeTimeouts(params.Timeout),
 	}
 	if params.TLS == "starttls-verify" {
 		cfg := &tls.Config{RootCAs: params.CAPool, MinVersion: tls.VersionTLS12}

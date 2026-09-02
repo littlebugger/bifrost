@@ -129,9 +129,11 @@ func resolveBackendCAs(cfg *Config) hcl.Diagnostics {
 		}
 		pool.Check.AuthUsername = pool.Auth.Username
 		pool.Check.AuthPassword = pool.Auth.Password
+		pool.Check.AuthAllowCleartext = pool.Auth.AllowCleartext
 		for j := range pool.Servers {
 			pool.Servers[j].Check.AuthUsername = pool.Auth.Username
 			pool.Servers[j].Check.AuthPassword = pool.Auth.Password
+			pool.Servers[j].Check.AuthAllowCleartext = pool.Auth.AllowCleartext
 		}
 	}
 
@@ -318,7 +320,7 @@ func (r *rawListener) convert() (Listener, hcl.Diagnostics) {
 // lowercasing HashedPassword so every later comparison is a plain byte
 // match against a fixed-case hex string.
 func (r *rawListenerAuth) convert() *ListenerAuth {
-	la := &ListenerAuth{rng: r.Range}
+	la := &ListenerAuth{rng: r.Range, AllowCleartext: r.AllowCleartext}
 	for _, u := range r.Users {
 		la.Users = append(la.Users, AuthUser{
 			Name:           u.Name,
@@ -358,8 +360,15 @@ func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 		BackendTLSCA:         r.BackendTLSCA,
 		EhloName:             r.EhloName,
 		MaxTransactions:      intOr(r.MaxTransactions, 0),
+		ReuseEnvelopes:       intOr(r.ReuseEnvelopes, 0),
 		rng:                  r.Range,
 		caRange:              r.BackendTLSCARange,
+	}
+	if r.MaxTransactions != nil {
+		p.maxTxnRange = r.MaxTransactionsRange
+	}
+	if r.ReuseEnvelopes != nil {
+		p.reuseEnvelopesRange = r.ReuseEnvelopesRange
 	}
 	if r.Check != nil {
 		c, cd := r.Check.convert()
@@ -376,6 +385,7 @@ func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 			Username:          r.Auth.Username,
 			Password:          r.Auth.Password,
 			PasswordFile:      r.Auth.PasswordFile,
+			AllowCleartext:    r.Auth.AllowCleartext,
 			rng:               r.Auth.Range,
 			passwordFileRange: r.Auth.PasswordFileRange,
 		}

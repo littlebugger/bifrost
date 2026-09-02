@@ -275,7 +275,7 @@ func (t *txn) reset(line []byte) {
 		t.failLeg(err, left)
 		return
 	}
-	t.detach(true)
+	t.detachOrStash()
 }
 
 // answerViolation answers the two malformed-input rows a session stays in

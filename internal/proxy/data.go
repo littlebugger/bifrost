@@ -91,7 +91,11 @@ func (t *txn) pipeBody() {
 		// over — that is the single-verdict rule.
 		t.record.dataVerdict = res.line
 		t.countTxn(t.srv, verdictClass(res.code, false))
-		t.detach(body.delivered)
+		if body.delivered {
+			t.detachOrStash()
+		} else {
+			t.detach(false)
+		}
 	case errors.Is(res.err, errBackendClosing):
 		// A 421 mid-DATA: translated to RplBackendClosing (451 4.4.2, see
 		// relayReply) and already relayed by the time we get here. Same

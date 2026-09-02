@@ -73,6 +73,7 @@ func TestMetricNamesStable(t *testing.T) {
 	m.synthReplies.WithLabelValues("451 4.4.1")
 	m.relayBytes.WithLabelValues("to_client")
 	m.backendDials.WithLabelValues("s", "ok")
+	m.backendConnReuse.WithLabelValues("s", "reused")
 
 	holder := &config.Holder{}
 	holder.Swap(oneServerConfig(closedAddr(t)))
@@ -105,6 +106,7 @@ func TestMetricNamesStable(t *testing.T) {
 		"bifrost_synthesized_replies_total",
 		"bifrost_relay_bytes_total",
 		"bifrost_backend_dials_total",
+		"bifrost_backend_conn_reuse_total",
 		"bifrost_probe_total",
 		"bifrost_server_up",
 		"bifrost_server_eligible",
@@ -126,5 +128,25 @@ func TestMetricNamesStable(t *testing.T) {
 		sort.Strings(gotNames)
 		sort.Strings(want)
 		t.Errorf("registry exposes %v, want exactly %v", gotNames, want)
+	}
+}
+
+// TestBackendReuse verifies BackendReuse counter records correctly.
+func TestBackendReuse(t *testing.T) {
+	m := New()
+	m.BackendReuse("s1", "reused")
+	m.BackendReuse("s1", "reused")
+	m.BackendReuse("s1", "capped")
+
+	mfs, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	if got := CounterValue(mfs, "bifrost_backend_conn_reuse_total", map[string]string{"server": "s1", "outcome": "reused"}); got != 2 {
+		t.Errorf("BackendReuse s1 reused: got %v, want 2", got)
+	}
+	if got := CounterValue(mfs, "bifrost_backend_conn_reuse_total", map[string]string{"server": "s1", "outcome": "capped"}); got != 1 {
+		t.Errorf("BackendReuse s1 capped: got %v, want 1", got)
 	}
 }
