@@ -102,15 +102,16 @@ membership change naming added/removed IPs.
 ## Testing
 
 Unit: template decode/validation (IP-literal rejection, interval floor,
-mixing with static servers); derived-snapshot builder (survivor pointer
-reuse, add/remove, deterministic member naming/truncation); fail-static
+mixing with static servers); derived-snapshot builder (stable names across
+deltas, add/remove, deterministic member naming/truncation); fail-static
 on error and on empty answer. Resolver injected as a func for tests
 (no real DNS in unit tests). Integration: fake resolver flipping
 between {A}, {A,B}, {B} — balancing spreads over both when present,
 probes attach per member, transactions in flight on a removed member
 finish, affinity conn to a removed member re-dials silently, empty
-answer changes nothing. Reuse + discovery: survivor keeps its cached
-conn across a delta that only adds a member.
+answer changes nothing. Reuse + discovery: after ANY delta the
+affinity conn re-dials silently (fresh pointers by design) and traffic
+continues uninterrupted.
 
 ## Docs
 
