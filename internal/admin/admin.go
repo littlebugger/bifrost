@@ -39,11 +39,11 @@ const shutdownGrace = 5 * time.Second
 // wired over the same config/health/balance/metrics the rest of the
 // balancer already runs.
 type Server struct {
-	cfgPath string // the file POST /reload re-Loads (write.go)
 	cfg     *config.Holder
 	checker *health.Checker
 	router  *balance.Router
 	m       *metrics.Metrics
+	reload  ReloadFunc // POST /reload's whole load+validate+swap cycle (write.go)
 	lg      *slog.Logger
 
 	mux *http.ServeMux
@@ -58,11 +58,13 @@ type Server struct {
 }
 
 // New builds an admin Server over the given dependencies and registers
-// every endpoint, read and write. cfgPath is the file POST /reload
-// re-Loads — it should be the same path the process was started with.
-// lg nil means slog.Default(). None of cfg, checker, router, m may be
+// every endpoint, read and write. reload is POST /reload's whole
+// load+validate+swap cycle — the caller (cmd/bifrost's wire.go) hands in
+// a.applyReload, the exact same method its own SIGHUP handler calls, so
+// there is one reload sequence in the process rather than two. lg nil
+// means slog.Default(). None of cfg, checker, router, m, reload may be
 // nil.
-func New(cfgPath string, cfg *config.Holder, checker *health.Checker, router *balance.Router, m *metrics.Metrics, lg *slog.Logger) *Server {
+func New(cfg *config.Holder, checker *health.Checker, router *balance.Router, m *metrics.Metrics, reload ReloadFunc, lg *slog.Logger) *Server {
 	if lg == nil {
 		lg = slog.Default()
 	}
@@ -73,7 +75,7 @@ func New(cfgPath string, cfg *config.Holder, checker *health.Checker, router *ba
 	// TestMetricsServed scraping the actual Handler(), not by
 	// constructing a ServerCollector and checking it in isolation.
 	m.Registry.MustRegister(metrics.NewServerCollector(cfg, checker, router))
-	s := &Server{cfgPath: cfgPath, cfg: cfg, checker: checker, router: router, m: m, lg: lg, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, checker: checker, router: router, m: m, reload: reload, lg: lg, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /servers", s.handleServers)
 	s.mux.HandleFunc("GET /stats", s.handleStats)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)

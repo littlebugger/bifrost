@@ -4,11 +4,22 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/hashicorp/hcl/v2"
-
-	"github.com/littlebugger/bifrost/internal/config"
 	"github.com/littlebugger/bifrost/internal/health"
 )
+
+// ReloadFunc performs one whole reload cycle — load the config file
+// fresh, validate it, and swap it in only on success — and reports the
+// outcome. POST /reload drives this closure instead of doing its own
+// load/validate/swap, so cmd/bifrost's SIGHUP path and this endpoint are
+// provably the same sequence, not two copies that can independently
+// decide things like whether a swap goes through a DNS-discovery
+// Runner (cmd/bifrost's applyReload is the one implementation; see its
+// doc comment).
+//
+// errs is non-nil (and the other three return values zero) when the
+// reload was rejected: one message per blocking config diagnostic, or a
+// single message for a rejected bind change.
+type ReloadFunc func() (diff string, discardedWeights, restartRequired, errs []string)
 
 // This file is epic-09's write half: set state/override/weight per
 // server, and reload. Every handler here follows the same shape:
@@ -95,10 +106,14 @@ func (s *Server) handleSetWeight(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleReload implements POST /reload: load+validate cfgPath fresh,
-// and only on success swap it in. An invalid new config never displaces
-// the config currently serving traffic — Holder.Swap is the last step,
-// not the first (PROJECT.md D14).
+// handleReload implements POST /reload: run the one shared reload cycle
+// (s.reload — cmd/bifrost's applyReload, the same method SIGHUP calls)
+// and report its outcome. An invalid new config, or one that fails
+// BindChange, never displaces the config currently serving traffic —
+// that guarantee (PROJECT.md D14) lives entirely inside s.reload, not
+// here; this handler only shapes the result into JSON. s.reload itself
+// already logs the reload (success or rejection), so this handler does
+// not log again.
 //
 // A successful reload discards every runtime weight override
 // (Router.ResetWeights, D15's "reverts to config on reload with a
@@ -107,44 +122,19 @@ func (s *Server) handleSetWeight(w http.ResponseWriter, r *http.Request) {
 // automatically (health.Checker.Run's own reload path reuses the same
 // serverHealth for a server that persists across the swap).
 func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
-	newCfg, diags := config.Load(s.cfgPath)
-	if diags.HasErrors() {
-		// Only the blocking diagnostics: config.Load's diags routinely
-		// also carry warnings (e.g. an RFC-floor notice) that have
-		// nothing to do with why this reload failed, and listing them
-		// as "errors" here would bury the actual cause.
-		msgs := make([]string, 0, len(diags))
-		for _, d := range diags {
-			if d.Severity != hcl.DiagError {
-				continue
-			}
-			msgs = append(msgs, d.Error()) // hcl.Diagnostic.Error() includes file:line:col
-		}
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"errors": msgs})
+	diff, discarded, restart, errs := s.reload()
+	if errs != nil {
+		// Covers both a config.Load failure (one message per blocking
+		// diagnostic) and a rejected bind change (one message) — s.reload
+		// doesn't distinguish the two in its return shape, and neither did
+		// this endpoint's response before the refactor.
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"errors": errs})
 		return
 	}
-
-	old := s.cfg.Load()
-	if err := config.BindChange(old, newCfg); err != nil {
-		// The listener and admin sockets are already open and v1 does not
-		// re-bind them (D14), so this file is refused whole — exactly as
-		// SIGHUP refuses it (cmd/bifrost/reload.go). Same status as a
-		// validation failure: the new config is unprocessable, and the one
-		// serving traffic is untouched.
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"errors": []string{err.Error()}})
-		return
-	}
-
-	s.cfg.Swap(newCfg)
-	discarded := s.router.ResetWeights()
-	diff := config.DiffSummary(old, newCfg)
 	// Accepted-but-not-applied edits (the listener's identity, the accept
 	// cap, the client-leg timeouts: read once per process) are reported
 	// rather than dropped, or an operator reads "diff" and believes the
 	// change is live.
-	restart := config.RestartRequired(old, newCfg)
-	s.lg.Info("config reloaded", "diff", diff, "discarded_weight_overrides", discarded,
-		"restart_required", restart)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"diff":                       diff,
 		"discarded_weight_overrides": discarded,

@@ -60,7 +60,8 @@ func testCfg(addr string) *config.Config {
 // testServer wires an admin.Server over a real (fast-interval)
 // health.Checker and a fresh balance.Router -- the checker's scheduler
 // is not started; tests that need a live probe call runChecker
-// themselves.
+// themselves. ReloadFunc is nil: nothing built here exercises POST
+// /reload (write_test.go's loadedServer does, with a real one).
 func testServer(t *testing.T, cfg *config.Config) (*Server, *health.Checker, *balance.Router) {
 	t.Helper()
 	holder := &config.Holder{}
@@ -68,7 +69,7 @@ func testServer(t *testing.T, cfg *config.Config) (*Server, *health.Checker, *ba
 	checker := health.New(holder, nil, nil)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(1)))
 	m := metrics.New()
-	return New("", holder, checker, router, m, nil), checker, router
+	return New(holder, checker, router, m, nil, nil), checker, router
 }
 
 // runChecker starts checker.Run in the background and returns a stop

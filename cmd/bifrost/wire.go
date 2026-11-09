@@ -25,7 +25,10 @@ import (
 // stdlib resolver, A+AAAA together. A package-level var rather than a
 // literal passed inline at the New call below so cmd/bifrost's own tests
 // can swap in a fake resolver (main_test.go) without a config knob that
-// would otherwise exist for nothing but tests.
+// would otherwise exist for nothing but tests. Caution: it is
+// process-global, so no two tests that both drive a real Runner through
+// it may run in parallel — main_test.go's override is restored via
+// t.Cleanup, not scoped per-goroutine.
 var defaultLookup discover.LookupFunc = func(ctx context.Context, host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
@@ -114,7 +117,10 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	a.smtpLn = ln
 
 	if cfg.Admin != nil {
-		a.admin = admin.New(cfgPath, holder, checker, router, m, lg)
+		// a.applyReload (not a second, admin-local load/validate/swap
+		// sequence) is what POST /reload drives — see its own doc comment
+		// in reload.go for why there must be only one.
+		a.admin = admin.New(holder, checker, router, m, a.applyReload, lg)
 		adminLn, err := a.admin.Listen()
 		if err != nil {
 			_ = ln.Close()
