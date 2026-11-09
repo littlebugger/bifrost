@@ -19,19 +19,33 @@ import (
 // Config is the fully decoded, resolved, and validated Bifrost
 // configuration returned by Load.
 type Config struct {
-	Defaults Defaults
-	Listener Listener
-	Pools    []Pool
-	Routing  Routing
-	Admin    *Admin // nil: no admin plane configured (logged warning, see Validate)
-	Limits   Limits
+	Defaults  Defaults
+	Listeners []Listener
+	Pools     []Pool
+	Routing   Routing
+	Admin     *Admin // nil: no admin plane configured (logged warning, see Validate)
+	Limits    Limits
 
-	// fileRange and listenerRanges back Validate's structural checks (e.g.
-	// "exactly one listener block") that have no single resolved field to
-	// anchor to. Zero value (unset) for a Config built by hand rather than
-	// by Load; Validate degrades to an unanchored diagnostic in that case.
-	fileRange      hcl.Range
-	listenerRanges []hcl.Range
+	// fileRange backs Validate's structural checks (e.g. "at least one
+	// listener block") that have no single resolved field to anchor to.
+	// Zero value (unset) for a Config built by hand rather than by Load;
+	// Validate degrades to an unanchored diagnostic in that case.
+	fileRange hcl.Range
+}
+
+// PrimaryListener returns the first configured listener: the transitional
+// accessor every current consumer uses, since they all still assume a
+// single listener (multi-listener routing is Tasks 3-4). Defensive against
+// a zero-listener Config instead of indexing bare into Listeners: a
+// syntactically valid but listener-less file can reach resolveInheritance
+// and the holder before Validate's "Missing listener block" error has a
+// chance to reject it (see cmd/bifrost's diags.HasErrors() gate, which
+// runs after both).
+func (c *Config) PrimaryListener() *Listener {
+	if len(c.Listeners) == 0 {
+		return &Listener{}
+	}
+	return &c.Listeners[0]
 }
 
 // Defaults holds the config-wide fallback values consulted by pool/server
@@ -111,9 +125,12 @@ type CheckParams struct {
 	fieldRanges map[string]hcl.Range
 }
 
-// Listener is the client-facing bind. Exactly one is supported in v1
-// (Validate rejects more or fewer).
+// Listener is one client-facing bind. Name is the block's label ("default"
+// when the single configured listener block was left unlabeled — see
+// rawFile.convert); Validate requires a label the moment there is more
+// than one (see validateListenerIdentity).
 type Listener struct {
+	Name     string
 	Bind     string
 	Hostname string
 	StartTLS *StartTLS     // nil: STARTTLS not advertised
@@ -279,10 +296,14 @@ type Routing struct {
 }
 
 // RoutingRule matches on client CIDR and/or MAIL FROM domain (wildcard
-// prefix allowed, e.g. "*.news.example.com") and selects a pool.
+// prefix allowed, e.g. "*.news.example.com") and selects a pool. Listener
+// optionally restricts the rule to sessions accepted on one of the named
+// listeners (decode only here; matching against the session's actual
+// listener is Task 2).
 type RoutingRule struct {
 	ClientCIDR     []string
 	MailFromDomain []string
+	Listener       []string
 	Pool           string
 
 	rng hcl.Range

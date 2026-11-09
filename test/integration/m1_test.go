@@ -108,10 +108,10 @@ func m1Config(addrs ...string) *config.Config {
 	}
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "SIZE 104857600"},
-		},
+		}},
 		Pools:   []config.Pool{pool},
 		Routing: config.Routing{DefaultPool: "p"},
 	}
@@ -368,10 +368,10 @@ func TestM1WithRealRouter(t *testing.T) {
 func domainRoutedConfig(promoAddr, defaultAddr string) *config.Config {
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "SIZE 104857600"},
-		},
+		}},
 		Pools: []config.Pool{
 			{
 				Name: "promo", Balance: "roundrobin", BackendTLS: "none", EhloName: "bifrost.test",

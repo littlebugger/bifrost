@@ -130,11 +130,11 @@ func poolConfig(timeouts config.Timeouts, tlsMode string, addrs ...string) *conf
 		})
 	}
 	return &config.Config{
-		Defaults: config.Defaults{Timeouts: timeouts},
-		Listener: config.Listener{Hostname: "bifrost.chaos", Capabilities: backendCaps()},
-		Pools:    []config.Pool{pool},
-		Routing:  config.Routing{DefaultPool: "p"},
-		Limits:   config.Limits{GlobalMaxConn: 256},
+		Defaults:  config.Defaults{Timeouts: timeouts},
+		Listeners: []config.Listener{{Hostname: "bifrost.chaos", Capabilities: backendCaps()}},
+		Pools:     []config.Pool{pool},
+		Routing:   config.Routing{DefaultPool: "p"},
+		Limits:    config.Limits{GlobalMaxConn: 256},
 	}
 }
 

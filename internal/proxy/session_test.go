@@ -25,10 +25,10 @@ import (
 // capability set, no TLS. STARTTLS cases build on it in starttls_test.go.
 func testConfig() *config.Config {
 	return &config.Config{
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "SIZE 10485760"},
-		},
+		}},
 	}
 }
 

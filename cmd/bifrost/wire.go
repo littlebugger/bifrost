@@ -113,9 +113,9 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 		}
 	}
 
-	ln, err := net.Listen("tcp", cfg.Listener.Bind)
+	ln, err := net.Listen("tcp", cfg.PrimaryListener().Bind)
 	if err != nil {
-		return nil, fmt.Errorf("listener bind %q: %w", cfg.Listener.Bind, err)
+		return nil, fmt.Errorf("listener bind %q: %w", cfg.PrimaryListener().Bind, err)
 	}
 	a.smtpLn = ln
 
@@ -165,11 +165,11 @@ func (a *app) adminAddr() string {
 // established keep the certificate they negotiated — a live session's
 // certificate cannot be changed under it, and does not need to be.
 func (a *app) listenerTLS(cfg *config.Config) *tls.Config {
-	if cfg.Listener.StartTLS == nil {
+	if cfg.PrimaryListener().StartTLS == nil {
 		return nil
 	}
 	return &tls.Config{
-		MinVersion:     minTLSVersion(cfg.Listener.StartTLS.MinVersion),
+		MinVersion:     minTLSVersion(cfg.PrimaryListener().StartTLS.MinVersion),
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return a.currentCert() },
 	}
 }
@@ -180,7 +180,7 @@ func (a *app) listenerTLS(cfg *config.Config) *tls.Config {
 // what re-reads the files from disk.
 func (a *app) currentCert() (*tls.Certificate, error) {
 	cfg := a.holder.Load()
-	if cfg == nil || cfg.Listener.StartTLS == nil {
+	if cfg == nil || cfg.PrimaryListener().StartTLS == nil {
 		return nil, errors.New("no listener certificate configured")
 	}
 
@@ -189,7 +189,7 @@ func (a *app) currentCert() (*tls.Certificate, error) {
 	if a.certCache != nil && a.certGen == cfg {
 		return a.certCache, nil
 	}
-	crt, err := tls.LoadX509KeyPair(cfg.Listener.StartTLS.Cert, cfg.Listener.StartTLS.Key)
+	crt, err := tls.LoadX509KeyPair(cfg.PrimaryListener().StartTLS.Cert, cfg.PrimaryListener().StartTLS.Key)
 	if err != nil {
 		if a.certCache == nil {
 			return nil, err
@@ -203,7 +203,7 @@ func (a *app) currentCert() (*tls.Certificate, error) {
 		return a.certCache, nil
 	}
 	a.certCache, a.certGen = &crt, cfg
-	a.lg.Info("listener certificate loaded", "cert", cfg.Listener.StartTLS.Cert)
+	a.lg.Info("listener certificate loaded", "cert", cfg.PrimaryListener().StartTLS.Cert)
 	return a.certCache, nil
 }
 

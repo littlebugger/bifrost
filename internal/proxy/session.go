@@ -188,7 +188,7 @@ type Session struct {
 // listener's certificate for the client-leg STARTTLS upgrade and is nil
 // when no certificate is configured, in which case STARTTLS is neither
 // advertised nor accepted; the caller loads it once at startup from
-// cfg.Listener.StartTLS rather than per connection.
+// cfg.PrimaryListener().StartTLS rather than per connection.
 func NewSession(conn net.Conn, cfg *config.Config, tlsCfg *tls.Config, h TxnHandler, lg *slog.Logger) *Session {
 	if lg == nil {
 		lg = slog.Default()
@@ -350,7 +350,7 @@ func (s *Session) mail(ctx context.Context, raw []byte) (stop bool, err error) {
 	if !s.greeted {
 		return false, s.write(RplBadSequence)
 	}
-	if s.cfg.Listener.Auth != nil && !s.authed {
+	if s.cfg.PrimaryListener().Auth != nil && !s.authed {
 		return false, s.write(RplAuthRequired)
 	}
 
@@ -574,7 +574,7 @@ func (s *Session) reset() {
 // hostname is the name Bifrost answers with in the banner and EHLO
 // reply.
 func (s *Session) hostname() string {
-	if h := s.cfg.Listener.Hostname; h != "" {
+	if h := s.cfg.PrimaryListener().Hostname; h != "" {
 		return h
 	}
 	return fallbackHostname
@@ -591,7 +591,7 @@ func (s *Session) tlsOffered() bool {
 // the operator did not configure), minus STARTTLS whenever an upgrade is
 // impossible (no certificate, or TLS already active per RFC 3207).
 func (s *Session) capabilities() []string {
-	caps := s.cfg.Listener.Capabilities
+	caps := s.cfg.PrimaryListener().Capabilities
 	if s.tlsOffered() {
 		// allow_cleartext means "plaintext AUTH is acceptable on this
 		// listener" even when starttls is also configured — the 538 gate
@@ -600,7 +600,7 @@ func (s *Session) capabilities() []string {
 		// append onto a fresh backing array: caps aliases the shared
 		// config's slice, so appending in place would risk corrupting it
 		// across sessions.
-		if s.cfg.Listener.Auth != nil && s.cfg.Listener.Auth.AllowCleartext && !s.authed {
+		if s.cfg.PrimaryListener().Auth != nil && s.cfg.PrimaryListener().Auth.AllowCleartext && !s.authed {
 			return append(append([]string(nil), caps...), "AUTH PLAIN")
 		}
 		return caps
@@ -615,7 +615,7 @@ func (s *Session) capabilities() []string {
 	// Auth.AllowCleartext opts out for a network-layer-secured link — same
 	// condition as the tlsOffered() branch above, applied here once TLS is
 	// actually active, and only until the client has authenticated.
-	if s.cfg.Listener.Auth != nil && (s.tlsActive || s.cfg.Listener.Auth.AllowCleartext) && !s.authed {
+	if s.cfg.PrimaryListener().Auth != nil && (s.tlsActive || s.cfg.PrimaryListener().Auth.AllowCleartext) && !s.authed {
 		out = append(out, "AUTH PLAIN")
 	}
 	return out

@@ -24,7 +24,7 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 // relayTimeouts).
 func txnTestConfig(backendAddr string) *config.Config {
 	return &config.Config{
-		Listener: config.Listener{Hostname: "bifrost.test", Capabilities: []string{"PIPELINING", "8BITMIME"}},
+		Listeners: []config.Listener{{Hostname: "bifrost.test", Capabilities: []string{"PIPELINING", "8BITMIME"}}},
 		Defaults: config.Defaults{Timeouts: config.Timeouts{
 			ClientIdle: 10 * time.Second, SessionMax: time.Minute,
 			BackendConnect: 2 * time.Second, BackendHandshake: 2 * time.Second,

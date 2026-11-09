@@ -42,9 +42,9 @@ func BindChange(old, newCfg *Config) error {
 	if old == nil || newCfg == nil {
 		return nil
 	}
-	if old.Listener.Bind != newCfg.Listener.Bind {
+	if old.PrimaryListener().Bind != newCfg.PrimaryListener().Bind {
 		return fmt.Errorf("listener bind changed (%q -> %q): restart required",
-			old.Listener.Bind, newCfg.Listener.Bind)
+			old.PrimaryListener().Bind, newCfg.PrimaryListener().Bind)
 	}
 	if o, n := adminBind(old), adminBind(newCfg); o != n {
 		return fmt.Errorf("admin bind changed (%q -> %q): restart required", o, n)
@@ -73,11 +73,11 @@ func RestartRequired(old, newCfg *Config) []string {
 	add := func(what string, from, to any) {
 		out = append(out, fmt.Sprintf("%s changed (%v -> %v): restart required to apply", what, from, to))
 	}
-	if old.Listener.Hostname != newCfg.Listener.Hostname {
-		add("listener hostname", old.Listener.Hostname, newCfg.Listener.Hostname)
+	if old.PrimaryListener().Hostname != newCfg.PrimaryListener().Hostname {
+		add("listener hostname", old.PrimaryListener().Hostname, newCfg.PrimaryListener().Hostname)
 	}
-	if !slices.Equal(old.Listener.Capabilities, newCfg.Listener.Capabilities) {
-		add("listener capabilities", old.Listener.Capabilities, newCfg.Listener.Capabilities)
+	if !slices.Equal(old.PrimaryListener().Capabilities, newCfg.PrimaryListener().Capabilities) {
+		add("listener capabilities", old.PrimaryListener().Capabilities, newCfg.PrimaryListener().Capabilities)
 	}
 	if old.Limits.GlobalMaxConn != newCfg.Limits.GlobalMaxConn {
 		add("global_maxconn", old.Limits.GlobalMaxConn, newCfg.Limits.GlobalMaxConn)
@@ -102,7 +102,7 @@ func RestartRequired(old, newCfg *Config) []string {
 		// an added/removed template unless warned about here.
 		out = append(out, "server_dns template set or settings changed: restart required to apply")
 	}
-	if listenerAuthChanged(old.Listener.Auth, newCfg.Listener.Auth) {
+	if listenerAuthChanged(old.PrimaryListener().Auth, newCfg.PrimaryListener().Auth) {
 		// Bypasses add(from, to): a Session captures Listener.Auth at
 		// accept (see internal/proxy), so revoking or re-keying a user
 		// here is exactly BindChange's "silently applies to nobody"

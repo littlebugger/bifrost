@@ -42,10 +42,10 @@ func TestReuseSharesOneConnAcrossEnvelopesWithSingleAuth(t *testing.T) {
 	})
 	cfg := &config.Config{
 		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME"},
-		},
+		}},
 		Pools: []config.Pool{{
 			Name: "p", Balance: "roundrobin", BackendTLS: "starttls", EhloName: "bifrost.test",
 			Auth:           &config.PoolAuth{Username: poolAuthUser, Password: poolAuthPass},

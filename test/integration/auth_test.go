@@ -73,13 +73,13 @@ func authChainConfig(backendAddr string) *config.Config {
 	}
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "STARTTLS"},
 			Auth: &config.ListenerAuth{
 				Users: []config.AuthUser{authTestUser(clientAuthUser, clientAuthSalt, clientAuthPass)},
 			},
-		},
+		}},
 		Pools:   []config.Pool{pool},
 		Routing: config.Routing{DefaultPool: "p"},
 	}

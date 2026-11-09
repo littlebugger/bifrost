@@ -126,8 +126,8 @@ func TestRestartRequiredListenerAuth(t *testing.T) {
 		return &ListenerAuth{Users: []AuthUser{{Name: "alice", Salt: "salt", HashedPassword: hash}}}
 	}
 
-	oldCfg := &Config{Listener: Listener{Auth: authWith(hashA)}}
-	changedCfg := &Config{Listener: Listener{Auth: authWith(hashB)}}
+	oldCfg := &Config{Listeners: []Listener{{Auth: authWith(hashA)}}}
+	changedCfg := &Config{Listeners: []Listener{{Auth: authWith(hashB)}}}
 
 	warnings := RestartRequired(oldCfg, changedCfg)
 	var authWarning string
@@ -165,8 +165,8 @@ func TestRestartRequiredListenerAuthCleartext(t *testing.T) {
 		}
 	}
 
-	oldCfg := &Config{Listener: Listener{Auth: authWith(true)}}
-	changedCfg := &Config{Listener: Listener{Auth: authWith(false)}}
+	oldCfg := &Config{Listeners: []Listener{{Auth: authWith(true)}}}
+	changedCfg := &Config{Listeners: []Listener{{Auth: authWith(false)}}}
 
 	var authWarning string
 	for _, w := range RestartRequired(oldCfg, changedCfg) {
@@ -179,7 +179,7 @@ func TestRestartRequiredListenerAuthCleartext(t *testing.T) {
 			RestartRequired(oldCfg, changedCfg))
 	}
 
-	identicalCfg := &Config{Listener: Listener{Auth: authWith(true)}}
+	identicalCfg := &Config{Listeners: []Listener{{Auth: authWith(true)}}}
 	for _, w := range RestartRequired(oldCfg, identicalCfg) {
 		if strings.Contains(w, "listener auth changed") {
 			t.Errorf("RestartRequired(old, identical) = %v, want no listener auth warning for identical auth", w)

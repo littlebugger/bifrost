@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 )
 
 // Load parses and strictly decodes the HCL file at path, resolves defaults
@@ -26,8 +27,20 @@ func Load(path string) (*Config, hcl.Diagnostics) {
 		return nil, diags
 	}
 
+	// ParseHCLFile always produces the native-syntax AST; the type
+	// assertion only fails for a JSON-syntax body (hcl.hclparse's
+	// ParseJSON path), which this package never calls.
+	body, ok := f.Body.(*hclsyntax.Body)
+	if !ok {
+		return nil, hcl.Diagnostics{errDiag(hcl.Range{}, "Unsupported config format",
+			"Bifrost only supports native HCL syntax config files.")}
+	}
+
 	var raw rawFile
-	diags = append(diags, gohcl.DecodeBody(f.Body, nil, &raw)...)
+	diags = append(diags, gohcl.DecodeBody(withoutListenerBlocks(body), nil, &raw)...)
+	listeners, ld := decodeListeners(body)
+	diags = append(diags, ld...)
+	raw.Listeners = listeners
 	if diags.HasErrors() {
 		return nil, diags
 	}
@@ -44,6 +57,54 @@ func Load(path string) (*Config, hcl.Diagnostics) {
 	diags = append(diags, cfg.Validate()...)
 
 	return cfg, diags
+}
+
+// withoutListenerBlocks returns a shallow copy of body with every
+// top-level "listener" block removed. rawFile.Listeners has no hcl tag
+// (see rawschema.go), so gohcl's schema for rawFile has no entry for
+// "listener" at all; feeding it the body unmodified would make every
+// listener block "Unsupported block type". Removing them here instead
+// keeps that strict-decode check intact for every other top-level block,
+// while decodeListeners reads the listener blocks straight from body.
+func withoutListenerBlocks(body *hclsyntax.Body) *hclsyntax.Body {
+	filtered := *body
+	filtered.Blocks = nil
+	for _, blk := range body.Blocks {
+		if blk.Type != "listener" {
+			filtered.Blocks = append(filtered.Blocks, blk)
+		}
+	}
+	return &filtered
+}
+
+// decodeListeners reads every top-level "listener" block directly from
+// the native-syntax body, bypassing gohcl's schema-based label
+// enforcement: gohcl's `,label` struct tag fixes one label count for every
+// block of a type, which cannot express "0 labels when it's the only
+// block, 1+ once there's more than one" — the backward-compatibility rule
+// (see the design doc's Config section). Each block's own body is still
+// strictly decoded through gohcl, so attribute-level diagnostics,
+// unsupported-attribute checks, and attr_range anchors all behave exactly
+// as they did before; only the block's own label and definition range are
+// read by hand, since gohcl only populates a `,def_range` field when it
+// performs the block-schema lookup itself, which doesn't happen on this
+// path.
+func decodeListeners(body *hclsyntax.Body) ([]rawListener, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+	var listeners []rawListener
+	for _, blk := range body.Blocks {
+		if blk.Type != "listener" {
+			continue
+		}
+		var rl rawListener
+		diags = append(diags, gohcl.DecodeBody(blk.Body, nil, &rl)...)
+		rl.Range = blk.DefRange()
+		if len(blk.Labels) > 0 {
+			rl.Name = blk.Labels[0]
+		}
+		listeners = append(listeners, rl)
+	}
+	return listeners, diags
 }
 
 // resolveBackendCAs parses every pool's backend_tls_ca file into an
@@ -161,9 +222,12 @@ func resolveFilePaths(cfg *Config, configPath string) {
 		}
 		return filepath.Join(dir, p)
 	}
-	if cfg.Listener.StartTLS != nil {
-		cfg.Listener.StartTLS.Cert = resolve(cfg.Listener.StartTLS.Cert)
-		cfg.Listener.StartTLS.Key = resolve(cfg.Listener.StartTLS.Key)
+	for i := range cfg.Listeners {
+		l := &cfg.Listeners[i]
+		if l.StartTLS != nil {
+			l.StartTLS.Cert = resolve(l.StartTLS.Cert)
+			l.StartTLS.Key = resolve(l.StartTLS.Key)
+		}
 	}
 	for i := range cfg.Pools {
 		cfg.Pools[i].BackendTLSCA = resolve(cfg.Pools[i].BackendTLSCA)
@@ -188,13 +252,16 @@ func (r *rawFile) convert(fileRange hcl.Range) (*Config, hcl.Diagnostics) {
 		cfg.Defaults = def
 	}
 
-	for _, l := range r.Listeners {
-		cfg.listenerRanges = append(cfg.listenerRanges, l.Range)
-	}
-	if len(r.Listeners) > 0 {
-		listener, ld := r.Listeners[0].convert()
+	for _, rl := range r.Listeners {
+		listener, ld := rl.convert()
 		diags = append(diags, ld...)
-		cfg.Listener = listener
+		cfg.Listeners = append(cfg.Listeners, listener)
+	}
+	if len(cfg.Listeners) == 1 && cfg.Listeners[0].Name == "" {
+		// Backward compatibility: a single, unlabeled listener block is
+		// still valid (a label is only required once there is more than
+		// one — see validateListenerIdentity) and gets this implicit name.
+		cfg.Listeners[0].Name = "default"
 	}
 
 	for _, p := range r.Pools {
@@ -303,6 +370,7 @@ func (r *rawCheck) convert() (CheckParams, hcl.Diagnostics) {
 
 func (r *rawListener) convert() (Listener, hcl.Diagnostics) {
 	l := Listener{
+		Name:              r.Name,
 		Bind:              r.Bind,
 		Hostname:          r.Hostname,
 		Capabilities:      r.Capabilities,
@@ -443,6 +511,7 @@ func (r *rawRouting) convert() Routing {
 		routing.Rules = append(routing.Rules, RoutingRule{
 			ClientCIDR:     rule.ClientCIDR,
 			MailFromDomain: rule.MailFromDomain,
+			Listener:       rule.Listener,
 			Pool:           rule.Pool,
 			rng:            rule.Range,
 		})

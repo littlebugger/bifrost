@@ -38,8 +38,8 @@ func TestBuiltinDefaults(t *testing.T) {
 	// Capabilities omitted entirely: the built-in safe set, and no
 	// STARTTLS because this fixture configures no certificate.
 	wantCaps := []string{"PIPELINING", "8BITMIME"}
-	if !reflect.DeepEqual(cfg.Listener.Capabilities, wantCaps) {
-		t.Errorf("Listener.Capabilities = %q, want %q", cfg.Listener.Capabilities, wantCaps)
+	if !reflect.DeepEqual(cfg.PrimaryListener().Capabilities, wantCaps) {
+		t.Errorf("Listener.Capabilities = %q, want %q", cfg.PrimaryListener().Capabilities, wantCaps)
 	}
 
 	if cfg.Limits.GlobalMaxConn != 1024 {
@@ -209,13 +209,13 @@ func TestCapabilitiesDefaultWithCertAppendsStartTLS(t *testing.T) {
 	if diags.HasErrors() {
 		t.Fatalf("Load(caps-omitted-with-cert.hcl) diags = %v", diags)
 	}
-	if cfg.Listener.StartTLS == nil {
+	if cfg.PrimaryListener().StartTLS == nil {
 		t.Fatal("Listener.StartTLS = nil, want the fixture's cert/key")
 	}
 
 	want := []string{"PIPELINING", "8BITMIME", "STARTTLS"}
-	if !reflect.DeepEqual(cfg.Listener.Capabilities, want) {
-		t.Errorf("Listener.Capabilities = %q, want %q", cfg.Listener.Capabilities, want)
+	if !reflect.DeepEqual(cfg.PrimaryListener().Capabilities, want) {
+		t.Errorf("Listener.Capabilities = %q, want %q", cfg.PrimaryListener().Capabilities, want)
 	}
 }
 

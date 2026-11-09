@@ -190,7 +190,7 @@ func (c *Checker) sync(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
-	c.listenerCaps = cfg.Listener.Capabilities
+	c.listenerCaps = cfg.PrimaryListener().Capabilities
 
 	want := make(map[svrKey]struct{})
 	for pi := range cfg.Pools {

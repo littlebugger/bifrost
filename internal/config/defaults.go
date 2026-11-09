@@ -65,7 +65,9 @@ func resolveInheritance(cfg *Config, raw *rawFile) {
 		defaultsTimeouts = raw.Defaults.Timeouts
 	}
 	resolveTimeouts(&cfg.Defaults.Timeouts, defaultsTimeouts, cfg.fileRange)
-	resolveCapabilities(&cfg.Listener)
+	for i := range cfg.Listeners {
+		resolveCapabilities(&cfg.Listeners[i])
+	}
 
 	cfg.Limits.GlobalMaxConn = builtinGlobalMaxConn
 	cfg.Limits.MaxTransactions = builtinMaxTransactions
@@ -89,7 +91,7 @@ func resolveInheritance(cfg *Config, raw *rawFile) {
 			pool.EhloName = raw.Defaults.ehloNameOr("")
 		}
 		if pool.EhloName == "" {
-			pool.EhloName = cfg.Listener.Hostname
+			pool.EhloName = cfg.PrimaryListener().Hostname
 		}
 		if rp.MaxTransactions != nil {
 			pool.MaxTransactions = *rp.MaxTransactions

@@ -34,7 +34,7 @@ import (
 func TestServersEndpointUnderTraffic(t *testing.T) {
 	backend := fakesmtp.Start(t, fakesmtp.Script{Caps: []string{"PIPELINING", "8BITMIME"}})
 	cfg := &config.Config{
-		Listener: config.Listener{Hostname: "bifrost.test", Capabilities: []string{"PIPELINING", "8BITMIME"}},
+		Listeners: []config.Listener{{Hostname: "bifrost.test", Capabilities: []string{"PIPELINING", "8BITMIME"}}},
 		Defaults: config.Defaults{Timeouts: config.Timeouts{
 			ClientIdle: 10 * time.Second, SessionMax: time.Minute,
 			BackendConnect: 2 * time.Second, BackendHandshake: 2 * time.Second,

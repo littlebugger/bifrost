@@ -62,10 +62,10 @@ func chaosConfig(maxconn, perServerCap int, addrs ...string) *config.Config {
 	}
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: chaosTimeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.chaos",
 			Capabilities: backendCaps(),
-		},
+		}},
 		Pools:   []config.Pool{pool},
 		Routing: config.Routing{DefaultPool: "p"},
 		Limits:  config.Limits{GlobalMaxConn: maxconn},
