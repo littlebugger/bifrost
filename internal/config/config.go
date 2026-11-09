@@ -234,6 +234,13 @@ type Server struct {
 	MaxTransactions int
 	Check           CheckParams
 
+	// DNSTemplate names the server_dns template this Server was expanded
+	// from (ExpandDNS sets it); empty for a plain, operator-declared
+	// server. internal/admin's /servers row builder reads this to decide
+	// a row's "discovered"/"template" fields (design doc's Observability
+	// section).
+	DNSTemplate string
+
 	rng         hcl.Range
 	weightRange hcl.Range // anchors "weight out of range" at the weight attribute itself
 

@@ -71,7 +71,8 @@ func expandPool(bp Pool, members map[TemplateKey][]netip.Addr) Pool {
 // expandTemplate expands one server_dns template into its member Servers,
 // sorted by netip.Addr.Compare and truncated to MaxTemplateMembers (the
 // sorted tail dropped). Every member clones tmpl's Weight/Backup/
-// MaxTransactions/Check verbatim; only Name and Address are per-member.
+// MaxTransactions/Check verbatim and carries DNSTemplate = tmpl.Name (the
+// admin "discovered" marker); only Name and Address are per-member.
 func expandTemplate(tmpl ServerDNS, addrs []netip.Addr) []Server {
 	if len(addrs) == 0 {
 		return nil
@@ -92,6 +93,7 @@ func expandTemplate(tmpl ServerDNS, addrs []netip.Addr) []Server {
 			Backup:          tmpl.Backup,
 			MaxTransactions: tmpl.MaxTransactions,
 			Check:           tmpl.Check,
+			DNSTemplate:     tmpl.Name,
 		}
 	}
 	return out

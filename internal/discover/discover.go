@@ -30,10 +30,14 @@ type LookupFunc func(ctx context.Context, host string) ([]netip.Addr, error)
 // implements it in internal/metrics, with no import needed on its side.
 type Metrics interface {
 	// Discovery reports one resolution attempt's outcome
-	// (bifrost_dns_discovery_total{template, result}).
+	// (bifrost_dns_discovery_total{template, result}). template is
+	// "pool/name" (resolve's metricsTemplate): that metric carries no
+	// separate "pool" label, so this keeps it unique across pools whose
+	// templates happen to share a name.
 	Discovery(template string, result string)
 	// DiscoveryChange reports one membership delta that caused a swap
-	// (bifrost_dns_discovery_changes_total{template}).
+	// (bifrost_dns_discovery_changes_total{template}). template is
+	// "pool/name", exactly like Discovery.
 	DiscoveryChange(template string)
 	// DiscoveredMembers reports a template's current member count
 	// (bifrost_pool_discovered_members{pool, template} gauge).
@@ -161,6 +165,14 @@ func (r *Runner) loop(ctx context.Context, key config.TemplateKey, tmpl config.S
 // the current member count; only an actual delta against the
 // last-known-good set re-expands and swaps.
 func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl config.ServerDNS) {
+	// metricsTemplate composes "pool/name": bifrost_dns_discovery_total
+	// and bifrost_dns_discovery_changes_total carry only a "template"
+	// label (design doc's Observability section), with no separate "pool"
+	// label to disambiguate two pools that happen to name a template the
+	// same. DiscoveredMembers below is unaffected: its gauge already
+	// carries pool and template as two separate labels.
+	metricsTemplate := key.Pool + "/" + key.Template
+
 	host, _, err := net.SplitHostPort(tmpl.Address)
 	if err != nil {
 		host = tmpl.Address
@@ -169,11 +181,11 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 	addrs, err := r.lookup(ctx, host)
 	switch {
 	case err != nil:
-		r.metrics.Discovery(key.Template, "error")
+		r.metrics.Discovery(metricsTemplate, "error")
 		r.lg.Warn("dns discovery lookup failed", "pool", key.Pool, "template", key.Template, "error", err)
 		return
 	case len(addrs) == 0:
-		r.metrics.Discovery(key.Template, "empty")
+		r.metrics.Discovery(metricsTemplate, "empty")
 		r.lg.Warn("dns discovery answer empty, keeping last-known-good", "pool", key.Pool, "template", key.Template)
 		return
 	}
@@ -185,7 +197,7 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 
 	sorted := slices.Clone(addrs)
 	slices.SortFunc(sorted, netip.Addr.Compare)
-	r.metrics.Discovery(key.Template, "ok")
+	r.metrics.Discovery(metricsTemplate, "ok")
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -210,7 +222,7 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 	added, removed := diffMembers(prev, sorted)
 	r.members[key] = sorted
 	r.holder.Swap(config.ExpandDNS(r.base, r.members))
-	r.metrics.DiscoveryChange(key.Template)
+	r.metrics.DiscoveryChange(metricsTemplate)
 	r.lg.Info("dns discovery membership changed",
 		"pool", key.Pool, "template", key.Template, "added", added, "removed", removed)
 }

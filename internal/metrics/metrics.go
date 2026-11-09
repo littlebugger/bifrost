@@ -51,6 +51,10 @@ type Metrics struct {
 	backendDials     *prometheus.CounterVec
 	backendConnReuse *prometheus.CounterVec
 	duplicateRisk    prometheus.Counter
+
+	dnsDiscovery        *prometheus.CounterVec
+	dnsDiscoveryChanges *prometheus.CounterVec
+	discoveredMembers   *prometheus.GaugeVec
 }
 
 // New returns a Metrics with its own private registry, every push-based
@@ -83,9 +87,19 @@ func New() *Metrics {
 		duplicateRisk: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "bifrost_duplicate_risk_total", Help: "Transactions where a backend died after the final dot but before a verdict (the duplicate-delivery window).",
 		}),
+		dnsDiscovery: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "bifrost_dns_discovery_total", Help: "server_dns resolution attempts, by template and result (ok/error/empty).",
+		}, []string{"template", "result"}),
+		dnsDiscoveryChanges: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "bifrost_dns_discovery_changes_total", Help: "server_dns membership deltas that triggered a config swap, by template.",
+		}, []string{"template"}),
+		discoveredMembers: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "bifrost_pool_discovered_members", Help: "Current member count of a server_dns template, by pool and template.",
+		}, []string{"pool", "template"}),
 	}
 	reg.MustRegister(m.sessionsActive, m.sessionsTotal, m.transactions,
-		m.synthReplies, m.relayBytes, m.backendDials, m.backendConnReuse, m.duplicateRisk)
+		m.synthReplies, m.relayBytes, m.backendDials, m.backendConnReuse, m.duplicateRisk,
+		m.dnsDiscovery, m.dnsDiscoveryChanges, m.discoveredMembers)
 	return m
 }
 
@@ -129,6 +143,27 @@ func (m *Metrics) DuplicateRisk() { m.duplicateRisk.Inc() }
 // BackendReuse implements proxy.Metrics.
 func (m *Metrics) BackendReuse(server string, outcome string) {
 	m.backendConnReuse.WithLabelValues(server, outcome).Inc()
+}
+
+// Discovery implements discover.Metrics: one server_dns resolution
+// attempt's outcome. template is the caller's own label value -- Task 5's
+// wiring passes "pool/name" here (discover.go) to keep it unique across
+// pools, since this counter carries no separate "pool" label.
+func (m *Metrics) Discovery(template, result string) {
+	m.dnsDiscovery.WithLabelValues(template, result).Inc()
+}
+
+// DiscoveryChange implements discover.Metrics: one membership delta that
+// triggered a holder swap.
+func (m *Metrics) DiscoveryChange(template string) {
+	m.dnsDiscoveryChanges.WithLabelValues(template).Inc()
+}
+
+// DiscoveredMembers implements discover.Metrics: a template's current
+// member count. A gauge, not a counter -- a later call overwrites rather
+// than accumulates.
+func (m *Metrics) DiscoveredMembers(pool, template string, n int) {
+	m.discoveredMembers.WithLabelValues(pool, template).Set(float64(n))
 }
 
 func resultLabel(ok bool) string {

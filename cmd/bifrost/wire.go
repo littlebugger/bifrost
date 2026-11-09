@@ -71,6 +71,14 @@ type app struct {
 func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	holder := &config.Holder{}
 
+	// metrics.New is called exactly once per process: admin.New registers
+	// the pull-side ServerCollector on this registry, and registering the
+	// same collector twice (or serving a different registry than the one
+	// the relay pushes to) is a panic or a silently empty /metrics. Built
+	// before the Runner below so discover.New can be handed the real
+	// thing instead of a nil (no-op) Metrics.
+	m := metrics.New()
+
 	// A Runner is built only when the config actually declares a
 	// server_dns template: it owns every holder swap from that point on
 	// (its own doc comment), and the holder's very first published value
@@ -81,16 +89,11 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	var runner *discover.Runner
 	initial := cfg
 	if hasDNSTemplates(cfg) {
-		runner = discover.New(holder, defaultLookup, lg, nil)
+		runner = discover.New(holder, defaultLookup, lg, m)
 		initial = config.ExpandDNS(cfg, nil)
 	}
 	holder.Swap(initial)
 
-	// metrics.New is called exactly once per process: admin.New registers
-	// the pull-side ServerCollector on this registry, and registering the
-	// same collector twice (or serving a different registry than the one
-	// the relay pushes to) is a panic or a silently empty /metrics.
-	m := metrics.New()
 	checker := health.New(holder, nil, lg)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(time.Now().UnixNano())))
 

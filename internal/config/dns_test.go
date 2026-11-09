@@ -106,6 +106,26 @@ func TestExpandDNSMemberFieldsClonedFromTemplate(t *testing.T) {
 	if want := "192.0.2.2:587"; member.Address != want {
 		t.Errorf("member.Address = %q, want %q (port from template address)", member.Address, want)
 	}
+	if member.DNSTemplate != tmpl.Name {
+		t.Errorf("member.DNSTemplate = %q, want %q (the template name)", member.DNSTemplate, tmpl.Name)
+	}
+}
+
+// TestExpandDNSStaticServerHasNoTemplateMarker proves a static server
+// (not expanded from any server_dns block) keeps DNSTemplate empty --
+// admin's /servers row builder (Task 5) reads this field to decide
+// "discovered": true/absent.
+func TestExpandDNSStaticServerHasNoTemplateMarker(t *testing.T) {
+	base := dnsTestBase()
+	out := ExpandDNS(base, map[TemplateKey][]netip.Addr{nodeKey(): addrs("192.0.2.2")})
+	routes := poolNamed(out.Pools, "routes")
+	static := serverNamed(routes.Servers, "static-extra")
+	if static == nil {
+		t.Fatalf("no server %q", "static-extra")
+	}
+	if static.DNSTemplate != "" {
+		t.Errorf("static.DNSTemplate = %q, want empty", static.DNSTemplate)
+	}
 }
 
 // TestExpandDNSStaticServersPrecedeMembers proves the pool's static

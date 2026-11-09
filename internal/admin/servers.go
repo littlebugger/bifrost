@@ -27,6 +27,8 @@ type serverView struct {
 	ConsecFail   int       `json:"consec_fail"`
 	LastChange   string    `json:"last_change,omitempty"` // RFC3339; omitted if never changed
 	LastProbe    probeView `json:"last_probe"`
+	Discovered   bool      `json:"discovered,omitempty"` // true for a server_dns-expanded member; omitted for a static server
+	Template     string    `json:"template,omitempty"`   // the server_dns template name; omitted for a static server
 }
 
 // serverViews walks the currently loaded config's pools/servers and
@@ -59,6 +61,8 @@ func (s *Server) serverViews() []serverView {
 					Latency: st.LastProbe.Latency.String(),
 					Detail:  st.LastProbe.Detail,
 				},
+				Discovered: srv.DNSTemplate != "",
+				Template:   srv.DNSTemplate,
 			}
 			if !st.LastChange.IsZero() {
 				v.LastChange = st.LastChange.Format(time.RFC3339)
