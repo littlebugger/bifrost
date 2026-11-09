@@ -766,16 +766,19 @@ An operator reload (`POST /reload` or `SIGHUP`) re-renders every
 template from the resolver's own last-known-good answer — the resolver
 owns membership, the file owns everything else — through the same
 Runner-aware `applyReload` every other reload path uses
-(`cmd/bifrost/reload.go`). One discovery-specific restart caveat:
-**adding or removing a `server_dns` block** itself (not a change to its
-live IP set, which needs no restart at all) only takes effect after a
-restart — discovery starts exactly one resolver goroutine per template
-at process start and can neither start nor stop one afterward. A
-reload that changes the template set logs
-`server_dns template set changed: restart required to apply` and still
-applies the rest of the file — the same partial-apply pattern the
-listener-identity warnings in the survival matrix above already use —
-proven by `TestRestartRequiredTemplateSetChanged`
+(`cmd/bifrost/reload.go`). Two discovery-specific restart caveats, both
+because discovery starts exactly one resolver goroutine per template at
+process start — capturing that template's address/resolve_interval by
+value — and can neither start nor stop a goroutine nor pick up either
+field's edit afterward: **adding or removing a `server_dns` block**, and
+**editing an existing template's `address` or `resolve_interval`**
+(not a change to its live IP set, which needs no restart at all) only
+take effect after a restart. A reload that changes the template set OR
+either field on a surviving template logs
+`server_dns template set or settings changed: restart required to apply`
+and still applies the rest of the file — the same partial-apply pattern
+the listener-identity warnings in the survival matrix above already use
+— proven by `TestRestartRequiredTemplateSetChanged`
 (`internal/config/holder_test.go`).
 
 ### Observability

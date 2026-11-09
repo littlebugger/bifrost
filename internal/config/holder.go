@@ -94,10 +94,13 @@ func RestartRequired(old, newCfg *Config) []string {
 		// internal/discover.Runner starts exactly one goroutine per
 		// server_dns template when Run begins and can neither start nor
 		// stop one afterward (its own doc comment) — identical in kind to
-		// BindChange/the listener-identity warnings above, just scoped to
-		// adding or removing a template rather than editing one already
-		// running.
-		out = append(out, "server_dns template set changed: restart required to apply")
+		// BindChange/the listener-identity warnings above. This also
+		// covers editing a surviving template's address or
+		// resolve_interval: Run's goroutine captured the old ServerDNS by
+		// value at startup and resolve keeps using that copy's host/
+		// interval forever, so those edits are just as silently inert as
+		// an added/removed template unless warned about here.
+		out = append(out, "server_dns template set or settings changed: restart required to apply")
 	}
 	if listenerAuthChanged(old.Listener.Auth, newCfg.Listener.Auth) {
 		// Bypasses add(from, to): a Session captures Listener.Auth at
@@ -141,28 +144,35 @@ func listenerAuthChanged(old, newCfg *ListenerAuth) bool {
 
 // templateKeysChanged reports whether the set of server_dns templates
 // (by TemplateKey, pool+label) differs between old and newCfg — added,
-// removed, or both; order and membership deltas within an unchanged
-// template don't count, only the declared set itself.
+// removed, or both — or whether a surviving key's address or
+// resolve_interval changed; order and membership deltas within an
+// unchanged template don't count, only its declared set/settings do.
 func templateKeysChanged(old, newCfg *Config) bool {
 	oldKeys := templateKeySet(old)
 	newKeys := templateKeySet(newCfg)
 	if len(oldKeys) != len(newKeys) {
 		return true
 	}
-	for k := range oldKeys {
-		if _, ok := newKeys[k]; !ok {
+	for k, oldTmpl := range oldKeys {
+		newTmpl, ok := newKeys[k]
+		if !ok {
+			return true
+		}
+		if oldTmpl.Address != newTmpl.Address || oldTmpl.ResolveInterval != newTmpl.ResolveInterval {
 			return true
 		}
 	}
 	return false
 }
 
-// templateKeySet collects every (pool, template) pair cfg declares.
-func templateKeySet(cfg *Config) map[TemplateKey]struct{} {
-	keys := make(map[TemplateKey]struct{})
+// templateKeySet collects every (pool, template) pair cfg declares,
+// keyed to its full ServerDNS so templateKeysChanged can compare a
+// surviving key's address/resolve_interval, not just its presence.
+func templateKeySet(cfg *Config) map[TemplateKey]ServerDNS {
+	keys := make(map[TemplateKey]ServerDNS)
 	for _, p := range cfg.Pools {
 		for _, tmpl := range p.DNSTemplates {
-			keys[TemplateKey{Pool: p.Name, Template: tmpl.Name}] = struct{}{}
+			keys[TemplateKey{Pool: p.Name, Template: tmpl.Name}] = tmpl
 		}
 	}
 	return keys
