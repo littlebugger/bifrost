@@ -742,6 +742,19 @@ first resolution: if it fails at startup, the pool starts with that
 template unexpanded (no members from it yet) and a loud log; the
 resolver keeps retrying on its own interval.
 
+### DNS answers are a trust boundary
+
+An unspecified (`0.0.0.0`/`::`) or multicast address in the answer is
+dropped before it can become a member — dialing `0.0.0.0:<port>` reaches
+the local host, which can be Bifrost's own listener — and an answer left
+empty by that filter is treated exactly like the empty-answer case above
+(proven by `TestSinkholeAnswerFilteredFromMembers` and
+`TestAllSinkholeAnswerTreatedAsEmpty`, `internal/discover/discover_test.go`).
+Loopback is deliberately not filtered (the integration suite dials it),
+so one gap stays operator-owned: a template's name must never resolve to
+an address Bifrost itself listens on, or Bifrost will probe and relay to
+itself in a self-relay loop.
+
 ### Continuity across membership changes is NAME-based
 
 Discovery is an internal reload: one resolver goroutine per template

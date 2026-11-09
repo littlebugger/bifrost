@@ -161,10 +161,32 @@ func (r *Runner) loop(ctx context.Context, key config.TemplateKey, tmpl config.S
 // resolve runs one lookup for key/tmpl and applies the design doc's
 // fail-static policy: a lookup error or an empty answer counts/logs and
 // returns, leaving the last-known-good membership (and therefore the
-// holder) untouched. A non-empty answer always counts "ok" and reports
-// the current member count; only an actual delta against the
-// last-known-good set re-expands and swaps.
+// holder) untouched. DNS answers are also a trust boundary: an
+// unspecified (0.0.0.0/::) or multicast address is dropped before it can
+// ever become a member (docs/operations.md's "DNS answers are a trust
+// boundary"), and an answer left empty by that filter is treated exactly
+// like the empty-answer case. A non-empty, filtered, deduplicated answer
+// always counts "ok" and reports the current (possibly capped) member
+// count; only an actual delta against the last-known-good set re-expands
+// and swaps. The lookup itself is bounded to one ResolveInterval so a
+// hung resolver can't stall this template's loop past its own tick.
 func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl config.ServerDNS) {
+	// Orphan guard, checked before anything else — including the lookup
+	// and its Discovery counter: a later Rerender may have dropped this
+	// template from r.base (Run never tears down the per-template
+	// goroutine for it — see Run's doc comment). Once that happens this
+	// resolve must go fully inert: no lookup, no counters, no log, no
+	// swap — otherwise an orphaned template's loop would keep resolving
+	// and counting/logging forever. The same check is re-taken under the
+	// same lock right before the swap below, to close the narrow race
+	// where a Rerender lands while this call is already past this guard.
+	r.mu.Lock()
+	orphaned := !templateExists(r.base, key)
+	r.mu.Unlock()
+	if orphaned {
+		return
+	}
+
 	// metricsTemplate composes "pool/name": bifrost_dns_discovery_total
 	// and bifrost_dns_discovery_changes_total carry only a "template"
 	// label (design doc's Observability section), with no separate "pool"
@@ -178,7 +200,9 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 		host = tmpl.Address
 	}
 
-	addrs, err := r.lookup(ctx, host)
+	lookupCtx, cancel := context.WithTimeout(ctx, tmpl.ResolveInterval)
+	defer cancel()
+	addrs, err := r.lookup(lookupCtx, host)
 	switch {
 	case err != nil:
 		r.metrics.Discovery(metricsTemplate, "error")
@@ -190,31 +214,47 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 		return
 	}
 
-	if len(addrs) > config.MaxTemplateMembers {
-		r.lg.Warn("dns discovery answer exceeds member cap, will be truncated",
-			"pool", key.Pool, "template", key.Template, "answered", len(addrs), "cap", config.MaxTemplateMembers)
+	// Trust-boundary filter: a sinkhole answer (0.0.0.0/::) or a
+	// multicast one must never become a dialable member — see
+	// docs/operations.md. An answer left with nothing safe is fail-static
+	// exactly like the empty case above.
+	safe := make([]netip.Addr, 0, len(addrs))
+	var dropped []netip.Addr
+	for _, a := range addrs {
+		if a.IsUnspecified() || a.IsMulticast() {
+			dropped = append(dropped, a)
+			continue
+		}
+		safe = append(safe, a)
+	}
+	if len(safe) == 0 {
+		r.metrics.Discovery(metricsTemplate, "empty")
+		r.lg.Warn("dns discovery answer only unspecified/multicast addresses, keeping last-known-good",
+			"pool", key.Pool, "template", key.Template, "dropped", dropped)
+		return
 	}
 
-	sorted := slices.Clone(addrs)
+	sorted := slices.Clone(safe)
 	slices.SortFunc(sorted, netip.Addr.Compare)
+	sorted = slices.Compact(sorted) // duplicate A/AAAA records collapse to one member each
+
+	if len(sorted) > config.MaxTemplateMembers {
+		r.lg.Warn("dns discovery answer exceeds member cap, will be truncated",
+			"pool", key.Pool, "template", key.Template, "answered", len(sorted), "cap", config.MaxTemplateMembers)
+	}
 	r.metrics.Discovery(metricsTemplate, "ok")
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Orphan guard: a later Rerender may have dropped this template from
-	// r.base (Run never tears down the per-template goroutine for it —
-	// see Run's doc comment). Once that happens this resolve must go
-	// inert: no swap, no changes counter, no gauge, no log — otherwise
-	// every tick would re-swap an unchanged derived config forever,
-	// pointlessly bumping the holder's identity for every other watcher
-	// (e.g. internal/health's reload-detection poll) to re-sync against.
+	// Re-check the orphan guard above: this closes the narrow race where
+	// a Rerender dropped the template between that check and this lock.
 	if !templateExists(r.base, key) {
 		return
 	}
 
 	prev := r.members[key]
-	r.metrics.DiscoveredMembers(key.Pool, key.Template, len(sorted))
+	r.metrics.DiscoveredMembers(key.Pool, key.Template, min(len(sorted), config.MaxTemplateMembers))
 	if slices.Equal(prev, sorted) {
 		return
 	}

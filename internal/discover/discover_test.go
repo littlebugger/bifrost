@@ -116,6 +116,47 @@ func (s *lookupStub) waitCall(t *testing.T) {
 	}
 }
 
+// fakeMetrics is a test-only discover.Metrics: it records exactly the
+// two calls these tests assert on — Discovery's result label and
+// DiscoveredMembers' gauge value — each on its own buffered channel so a
+// test can wait for "the Nth call happened" instead of sleeping.
+// DiscoveryChange needs no recording yet; the embedded noMetrics' no-op
+// covers it.
+type fakeMetrics struct {
+	noMetrics
+	results chan string
+	members chan int
+}
+
+func newFakeMetrics() *fakeMetrics {
+	return &fakeMetrics{results: make(chan string, 1024), members: make(chan int, 1024)}
+}
+
+func (f *fakeMetrics) Discovery(_, result string)           { f.results <- result }
+func (f *fakeMetrics) DiscoveredMembers(_, _ string, n int) { f.members <- n }
+
+func (f *fakeMetrics) waitResult(t *testing.T) string {
+	t.Helper()
+	select {
+	case r := <-f.results:
+		return r
+	case <-time.After(2 * time.Second):
+		t.Fatal("Discovery was never reported")
+		return ""
+	}
+}
+
+func (f *fakeMetrics) waitMembers(t *testing.T) int {
+	t.Helper()
+	select {
+	case n := <-f.members:
+		return n
+	case <-time.After(2 * time.Second):
+		t.Fatal("DiscoveredMembers was never reported")
+		return 0
+	}
+}
+
 // TestInitialResolvePopulatesMembers proves the first resolution runs
 // inline (before any ticker) and its result lands in the holder: Run
 // starts against an unexpanded base (no DNSTemplates member yet) and the
@@ -266,6 +307,142 @@ func TestEmptyAnswerKeepsLastKnownGood(t *testing.T) {
 	}
 }
 
+// TestSinkholeAnswerFilteredFromMembers proves resolve drops unspecified
+// (0.0.0.0/::) and multicast addresses before they can become pool
+// members: dialing 0.0.0.0:<port> reaches the local host, which can be
+// Bifrost's own listener (docs/operations.md's "DNS answers are a trust
+// boundary").
+func TestSinkholeAnswerFilteredFromMembers(t *testing.T) {
+	holder := &config.Holder{}
+	base := testBase("routes", "node", "svc.local:587", 15*time.Millisecond)
+	holder.Swap(base)
+
+	stub := newLookupStub(addrsOf("0.0.0.0", "10.0.0.1"))
+	r := New(holder, stub.fn, discardLog(), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	stub.waitCall(t)
+	snap := waitForSnapshot(t, holder, base)
+	routes := poolNamed(snap, "routes")
+	if len(routes.Servers) != 1 || !hasServer(routes.Servers, "node-10.0.0.1") {
+		t.Fatalf("routes.Servers = %+v, want exactly [node-10.0.0.1] (0.0.0.0 dropped)", routes.Servers)
+	}
+}
+
+// TestAllSinkholeAnswerTreatedAsEmpty proves an answer containing ONLY
+// unspecified/multicast addresses is treated exactly like an empty
+// answer: fail-static, no swap, last-known-good membership kept.
+func TestAllSinkholeAnswerTreatedAsEmpty(t *testing.T) {
+	holder := &config.Holder{}
+	base := testBase("routes", "node", "svc.local:587", 10*time.Millisecond)
+	holder.Swap(base)
+
+	stub := newLookupStub(addrsOf("0.0.0.0"))
+	r := New(holder, stub.fn, discardLog(), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	for i := 0; i < 3; i++ {
+		stub.waitCall(t)
+	}
+	if cur := holder.Load(); cur != base {
+		t.Errorf("holder snapshot changed for an all-sinkhole answer, want last-known-good kept (empty-path)")
+	}
+}
+
+// TestDuplicateAnswerDeduped proves a resolver answer with duplicate
+// A/AAAA records collapses to one member per unique address, instead of
+// two identically-named pool members.
+func TestDuplicateAnswerDeduped(t *testing.T) {
+	holder := &config.Holder{}
+	base := testBase("routes", "node", "svc.local:587", 15*time.Millisecond)
+	holder.Swap(base)
+
+	stub := newLookupStub(addrsOf("192.0.2.1", "192.0.2.1", "192.0.2.2"))
+	r := New(holder, stub.fn, discardLog(), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	stub.waitCall(t)
+	snap := waitForSnapshot(t, holder, base)
+	routes := poolNamed(snap, "routes")
+	if len(routes.Servers) != 2 || !hasServer(routes.Servers, "node-192.0.2.1") || !hasServer(routes.Servers, "node-192.0.2.2") {
+		t.Fatalf("routes.Servers = %+v, want exactly 2 members (duplicate 192.0.2.1 deduped)", routes.Servers)
+	}
+}
+
+// TestDiscoveredMembersGaugeReportsPostTruncationCount proves the gauge
+// reports the actual (capped) member count, not the raw answer size: a
+// 300-address answer must gauge config.MaxTemplateMembers (256), the
+// number ExpandDNS will actually keep, not 300.
+func TestDiscoveredMembersGaugeReportsPostTruncationCount(t *testing.T) {
+	holder := &config.Holder{}
+	base := testBase("routes", "node", "svc.local:587", 50*time.Millisecond)
+	holder.Swap(base)
+
+	const total = 300
+	addrs := make([]netip.Addr, total)
+	for i := range addrs {
+		addrs[i] = netip.AddrFrom4([4]byte{10, 0, byte(i / 256), byte(i % 256)})
+	}
+
+	stub := newLookupStub(addrs)
+	fm := newFakeMetrics()
+	r := New(holder, stub.fn, discardLog(), fm)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	stub.waitCall(t)
+	if got := fm.waitMembers(t); got != config.MaxTemplateMembers {
+		t.Errorf("DiscoveredMembers gauge = %d, want %d (post-truncation cap, not the raw 300-address answer)",
+			got, config.MaxTemplateMembers)
+	}
+}
+
+// TestHungLookupHitsPerLookupDeadline proves resolve bounds each lookup
+// to one ResolveInterval: a lookup stub that blocks until its ctx is
+// done must return promptly as result="error" on every tick, instead of
+// stalling the loop past its interval forever.
+func TestHungLookupHitsPerLookupDeadline(t *testing.T) {
+	holder := &config.Holder{}
+	base := testBase("routes", "node", "svc.local:587", 20*time.Millisecond)
+	holder.Swap(base)
+
+	calls := make(chan struct{}, 1024)
+	blockingLookup := func(ctx context.Context, _ string) ([]netip.Addr, error) {
+		calls <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	fm := newFakeMetrics()
+	r := New(holder, blockingLookup, discardLog(), fm)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-calls:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("lookup call %d never started: loop stalled past its per-lookup deadline", i+1)
+		}
+		if got := fm.waitResult(t); got != "error" {
+			t.Errorf("call %d: Discovery result = %q, want %q", i+1, got, "error")
+		}
+	}
+}
+
 // TestRerenderAppliesEditKeepingMembership proves Rerender re-expands a
 // newly supplied base against the LAST-KNOWN membership: the operator
 // edit (a second static server here) shows up in the swapped snapshot
@@ -365,17 +542,19 @@ func TestConcurrentRerenderAndDeltaSwapsRaceClean(t *testing.T) {
 	}
 }
 
-// TestOrphanedTemplateGoesInert proves resolve's orphan guard: once a
-// Rerender drops a template from the base (Run never tears down its
-// goroutine — see Run's doc comment), a subsequent membership delta for
-// that same key must NOT swap, even though the loop keeps ticking.
+// TestOrphanedTemplateGoesInert proves resolve's orphan guard sits above
+// the lookup itself: once a Rerender drops a template from the base
+// (Run never tears down its goroutine — see Run's doc comment), the
+// template's loop must go fully inert — no further lookup call, no
+// Discovery metric, and no swap — even though the loop keeps ticking.
 func TestOrphanedTemplateGoesInert(t *testing.T) {
 	holder := &config.Holder{}
 	base := testBase("routes", "node", "svc.local:587", 10*time.Millisecond)
 	holder.Swap(base)
 
 	stub := newLookupStub(addrsOf("192.0.2.1"))
-	r := New(holder, stub.fn, discardLog(), nil)
+	fm := newFakeMetrics()
+	r := New(holder, stub.fn, discardLog(), fm)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -383,6 +562,9 @@ func TestOrphanedTemplateGoesInert(t *testing.T) {
 
 	stub.waitCall(t)
 	_ = waitForSnapshot(t, holder, base)
+	if got := fm.waitResult(t); got != "ok" {
+		t.Fatalf("precondition: Discovery result = %q, want %q", got, "ok")
+	}
 
 	// Drop the "node" template from the base entirely (operator removed
 	// the server_dns block) and Rerender it in.
@@ -393,13 +575,31 @@ func TestOrphanedTemplateGoesInert(t *testing.T) {
 		t.Fatal("Rerender did not install a snapshot")
 	}
 
-	// A new membership delta for the now-orphaned key must not swap: a
-	// few more ticks with a changed answer must leave the snapshot
-	// pointer untouched.
-	stub.set(addrsOf("192.0.2.1", "192.0.2.2"), nil)
-	for i := 0; i < 3; i++ {
-		stub.waitCall(t)
+	// At most one resolve can already be in flight at the exact instant
+	// Rerender lands (it read r.base as still current a moment before);
+	// drain that single possible call/metric before asserting silence.
+	select {
+	case <-stub.calls:
+	case <-time.After(30 * time.Millisecond):
 	}
+	select {
+	case <-fm.results:
+	default:
+	}
+
+	// From here on the orphan guard sits above the lookup: an orphaned
+	// template's loop must call lookup no more and report no further
+	// Discovery result, across several more tick intervals.
+	for i := 0; i < 5; i++ {
+		select {
+		case <-stub.calls:
+			t.Error("lookup called again for an orphaned template, want it inert before the lookup")
+		case <-fm.results:
+			t.Error("Discovery reported for an orphaned template, want none")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
 	if cur := holder.Load(); cur != snapOrphaned {
 		t.Errorf("holder snapshot changed for an orphaned template, want it inert")
 	}
