@@ -138,25 +138,25 @@ Semantics (binding): lookup error OR empty answer → keep last-known-good, coun
 **Interfaces:**
 - Produces: counters `bifrost_dns_discovery_total{template, result="ok"|"error"|"empty"}`, `bifrost_dns_discovery_changes_total{template}`; gauge `bifrost_pool_discovered_members{pool, template}`; admin `/servers` rows for members gain `"discovered": true, "template": "<name>"` (derive from a marker on the expanded Server — add `DNSTemplate string` to `config.Server`, set by ExpandDNS, empty for static servers; admin reads it).
 
-- [ ] **Step 1: Failing tests** — metrics golden list +3; admin JSON shape for a discovered vs static server.
-- [ ] **Step 2: RED**. **Step 3: Implement** (template label = "pool/name" to keep it unique). **Step 4: GREEN** — `go test ./...`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: dns discovery metrics and admin fields"`
+- [x] **Step 1: Failing tests** — metrics golden list +3; admin JSON shape for a discovered vs static server.
+- [x] **Step 2: RED**. **Step 3: Implement** (template label = "pool/name" to keep it unique). **Step 4: GREEN** — `go test ./...`.
+- [x] **Step 5: Commit** — `git commit -am "feat: dns discovery metrics and admin fields"`
 
 ### Task 6: Integration test
 
 **Files:**
 - Create: `test/integration/dnsdiscovery_test.go`
 
-- [ ] **Step 1: Write tests** (library-level harness like m1/reuse tests, injected LookupFunc, two fakesmtp backends as the "IPs" — the lookup returns their listen addrs' IPs; template port must match, so start the fakes on one fixed port each via the harness's addr plumbing — read how fakesmtp.StartAddr works): (1) membership {A,B}: transactions spread over both (DialCount>0 on each), per-member probes visible in `/servers`; (2) remove B mid-run: in-flight finishes, next transactions all land on A, cached affinity conn to B silently re-dials (pool with reuse_envelopes=3 to prove the interplay); (3) empty answer: membership unchanged, mail keeps flowing.
-- [ ] **Step 2: Run** — `go test -tags=integration ./test/integration/ -run TestDNSDiscovery -v`.
-- [ ] **Step 3: Full suite** — `go test ./...` and `go test -race -count=1 -tags=integration ./internal/discover/ ./test/integration/`.
-- [ ] **Step 4: Commit** — `git commit -am "test: dns discovery integration coverage"`
+- [x] **Step 1: Write tests** (library-level harness like m1/reuse tests, injected LookupFunc, two fakesmtp backends as the "IPs" — the lookup returns their listen addrs' IPs; template port must match, so start the fakes on one fixed port each via the harness's addr plumbing — read how fakesmtp.StartAddr works): (1) membership {A,B}: transactions spread over both (DialCount>0 on each), per-member probes visible in `/servers`; (2) remove B mid-run: in-flight finishes, next transactions all land on A, cached affinity conn to B silently re-dials (pool with reuse_envelopes=3 to prove the interplay); (3) empty answer: membership unchanged, mail keeps flowing.
+- [x] **Step 2: Run** — `go test -tags=integration ./test/integration/ -run TestDNSDiscovery -v`.
+- [x] **Step 3: Full suite** — `go test ./...` and `go test -race -count=1 -tags=integration ./internal/discover/ ./test/integration/`.
+- [x] **Step 4: Commit** — `git commit -am "test: dns discovery integration coverage"`
 
 ### Task 7: Documentation
 
 **Files:**
 - Modify: `PROJECT.md` (move "DNS service discovery" from the skipped list to a documented mode; fail-static policy sentence), `docs/operations.md` (section: k8s headless example, no-TTL/interval constraint, member naming, fail-static, metrics), `examples/bifrost.hcl` (commented `server_dns` sketch)
 
-- [ ] **Step 1–2: Edit docs**; `go test ./internal/config/ -v` green (fixture).
-- [ ] **Step 3: Gates** — `go test ./...`; `gofumpt -l internal cmd test` empty.
-- [ ] **Step 4: Commit** — `git commit -am "docs: dns-discovered pool members"`
+- [x] **Step 1–2: Edit docs**; `go test ./internal/config/ -v` green (fixture).
+- [x] **Step 3: Gates** — `go test ./...`; `gofumpt -l internal cmd test` empty.
+- [x] **Step 4: Commit** — `git commit -am "docs: dns-discovered pool members"`

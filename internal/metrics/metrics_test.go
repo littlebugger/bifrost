@@ -58,7 +58,7 @@ func waitForProbe(t *testing.T, c *health.Checker, pool, server string) {
 // TestMetricNamesStable is the golden-list contract test: a real
 // registry — the push-based Metrics and the pull-based ServerCollector
 // registered together on it, exactly the way internal/admin.New wires
-// them for a live /metrics scrape — Gather()s exactly the twelve stable
+// them for a live /metrics scrape — Gather()s exactly the sixteen stable
 // names PROJECT.md's Produces block documents, no more, no fewer.
 //
 // Registering ServerCollector here (rather than only checking its
