@@ -2,8 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCheckModeOK(t *testing.T) {
@@ -33,5 +45,216 @@ func TestCheckModeBad(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "Weight out of range") {
 		t.Errorf("stderr = %q, want it to mention the specific violation", errOut)
+	}
+}
+
+// TestServeDNSDiscoveryListsMembersAcrossReload drives run()/serve in
+// process (self-signaled: serve's own signal.Notify is in THIS process,
+// so sending SIGHUP/SIGTERM to os.Getpid() reaches it exactly like an
+// operator's kill -HUP would) with a config carrying one server_dns
+// template and the package-level defaultLookup overridden to a fake
+// resolver. It proves the whole wiring end to end: the Runner is
+// actually started (GET /servers lists the discovered node-<ip> members)
+// and a SIGHUP reload goes through Rerender rather than a bare
+// holder.Swap — an edited file (here, the template's weight) takes
+// effect while the discovered membership itself is fail-static across
+// the reload (kept from the last resolution, not re-derived from it).
+func TestServeDNSDiscoveryListsMembersAcrossReload(t *testing.T) {
+	origLookup := defaultLookup
+	t.Cleanup(func() { defaultLookup = origLookup })
+	defaultLookup = func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("10.42.0.1"), netip.MustParseAddr("10.42.0.2")}, nil
+	}
+
+	smtpAddr, adminAddr := freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	if err := os.WriteFile(path, []byte(dnsDiscoveryFixture(smtpAddr, adminAddr, 1)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-f", path}, io.Discard, &stderr) }()
+
+	// serve's own signal.Notify is unregistered (defer signal.Stop) the
+	// moment serve returns, so a cleanup-time SIGTERM sent AFTER the
+	// normal flow below has already drained done would have no handler
+	// left to catch it — default disposition kills the whole test binary
+	// instead of just the long-gone serve goroutine. stopped guards
+	// against exactly that double-signal race: this cleanup is a safety
+	// net for a test that fails before reaching its own clean shutdown,
+	// not a second shutdown on top of a successful one.
+	var stopped atomic.Bool
+	t.Cleanup(func() {
+		if stopped.Load() {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("serve did not exit during cleanup; logs:\n%s", stderr.String())
+		}
+	})
+
+	adminURL := "http://" + adminAddr
+	waitForStatus(t, adminURL+"/healthz", http.StatusOK)
+	waitForServersContaining(t, adminURL, "node-10.42.0.1", "node-10.42.0.2")
+
+	// Edit the file (the template's weight, not its membership) and
+	// reload: fail-static means the discovered IPs survive untouched,
+	// while the edited weight takes effect.
+	if err := os.WriteFile(path, []byte(dnsDiscoveryFixture(smtpAddr, adminAddr, 5)), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+	before := strings.Count(stderr.String(), "config reloaded")
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatalf("SIGHUP: %v", err)
+	}
+	waitForLogCount(t, &stderr, "config reloaded", before+1)
+
+	body := waitForServersContaining(t, adminURL, "node-10.42.0.1", "node-10.42.0.2")
+	if !strings.Contains(body, `"weight":5`) {
+		t.Errorf("GET /servers after reload = %s, want the edited weight 5 applied", body)
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	select {
+	case code := <-done:
+		stopped.Store(true)
+		if code != 0 {
+			t.Errorf("run() exit code = %d, want 0; logs:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
+	}
+}
+
+// dnsDiscoveryFixture is the smallest config carrying one server_dns
+// template (pool "routes", label "node"): a listener, that one pool, a
+// default route to it, and an admin plane to observe /servers over.
+func dnsDiscoveryFixture(smtpAddr, adminAddr string, weight int) string {
+	return fmt.Sprintf(`
+listener {
+  bind     = %q
+  hostname = "bifrost.test"
+}
+
+pool "routes" {
+  balance = "roundrobin"
+
+  server_dns "node" {
+    address          = "mta.discovery.test:587"
+    resolve_interval = "1s"
+    weight           = %d
+  }
+}
+
+routing {
+  default_pool = "routes"
+}
+
+admin {
+  bind = %q
+}
+`, smtpAddr, weight, adminAddr)
+}
+
+// freePort reserves a loopback port by binding and immediately releasing
+// it: the config file needs a concrete bind address before the process
+// starts, so ":0" is not an option (nothing could discover which port it
+// got).
+func freePort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release reserved port: %v", err)
+	}
+	return addr
+}
+
+// syncBuffer is a bytes.Buffer safe for serve's slog handler (one
+// writer) and the test polling its content (one reader) concurrently.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitForStatus bounded-polls url until it answers want.
+func waitForStatus(t *testing.T, url string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if resp, err := http.Get(url); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == want {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET %s never answered %d", url, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForServersContaining bounded-polls adminURL+"/servers" until its
+// body contains every one of want, and returns that body — the
+// event-driven way to wait for the Runner's async first resolution (or a
+// reload's swap) to land, instead of sleeping a guessed duration.
+func waitForServersContaining(t *testing.T, adminURL string, want ...string) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if resp, err := http.Get(adminURL + "/servers"); err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			text := string(body)
+			ok := true
+			for _, s := range want {
+				if !strings.Contains(text, s) {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return text
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET %s/servers never contained %v", adminURL, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForLogCount bounded-polls buf until marker appears at least want
+// times.
+func waitForLogCount(t *testing.T, buf *syncBuffer, marker string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for strings.Count(buf.String(), marker) < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("log never reached %d occurrences of %q; logs:\n%s", want, marker, buf.String())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

@@ -47,13 +47,32 @@ func (a *app) reload() {
 		a.lg.Warn("reload applied with a limitation", "detail", warning)
 	}
 
-	a.holder.Swap(newCfg)
+	// The Runner owns every holder swap once any server_dns template
+	// exists (internal/discover's own doc comment): Rerender re-expands
+	// newCfg against the last-known-good DNS membership and swaps it in
+	// under the same mutex that serializes the Runner's own delta-driven
+	// swaps, so an operator reload and a resolver tick can never race each
+	// other. No Runner means no templates, so a bare Swap is exactly
+	// equivalent.
+	if a.runner != nil {
+		a.runner.Rerender(newCfg)
+	} else {
+		a.holder.Swap(newCfg)
+	}
+
 	// D15's survival matrix: admin state and force overrides are keyed by
 	// (pool, server) inside the health checker and survive the swap on
 	// their own; runtime weight overrides are deliberately discarded, and
 	// which ones went is logged rather than left for an operator to
 	// rediscover by watching traffic.
 	discarded := a.router.ResetWeights()
-	a.lg.Info("config reloaded", "diff", config.DiffSummary(old, newCfg),
+	// DiffSummary reads the holder's own post-swap value rather than
+	// newCfg directly: with a Runner active that value is EXPANDED (newCfg
+	// plus discovered members), and old is likewise always an expanded
+	// snapshot once discovery is live — diffing an expanded old against an
+	// unexpanded newCfg would otherwise log every discovered member as
+	// "removed" on every single reload. Without a Runner the holder holds
+	// newCfg verbatim, so this is identical to the old behavior.
+	a.lg.Info("config reloaded", "diff", config.DiffSummary(old, a.holder.Load()),
 		"discarded_weight_overrides", discarded)
 }

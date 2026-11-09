@@ -114,11 +114,11 @@ func (r *Runner) Rerender(base *config.Config)
 
 Semantics (binding): lookup error OR empty answer → keep last-known-good, count `result=error|empty`, log at Warn with the template key — no swap. Delta (set comparison on sorted addrs) → `ExpandDNS(base, members)` + Swap + Info log naming added/removed IPs + `changes` counter. No delta → nothing (a stable farm never swaps). First resolution at startup happens inline in Run before the ticker (members available ~immediately), still fail-static.
 
-- [ ] **Step 1: Failing tests** (fake lookup, intervals of 10–20ms): initial resolve populates members (holder snapshot has them); flip {A}→{A,B}→{B} drives adds/removes with stable member names across snapshots; error keeps membership; empty keeps membership; Rerender with an edited base keeps membership while applying the edit; concurrent Rerender + delta swaps race-clean (`-race`).
-- [ ] **Step 2: RED** — `go test ./internal/discover/ -v`.
-- [ ] **Step 3: Implement** (~150 lines).
-- [ ] **Step 4: GREEN** — `go test -race ./internal/discover/ -v`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: dns discovery runner with fail-static membership"`
+- [x] **Step 1: Failing tests** (fake lookup, intervals of 10–20ms): initial resolve populates members (holder snapshot has them); flip {A}→{A,B}→{B} drives adds/removes with stable member names across snapshots; error keeps membership; empty keeps membership; Rerender with an edited base keeps membership while applying the edit; concurrent Rerender + delta swaps race-clean (`-race`).
+- [x] **Step 2: RED** — `go test ./internal/discover/ -v`.
+- [x] **Step 3: Implement** (~150 lines).
+- [x] **Step 4: GREEN** — `go test -race ./internal/discover/ -v`.
+- [x] **Step 5: Commit** — `git commit -am "feat: dns discovery runner with fail-static membership"`
 
 ### Task 4: Wiring — cmd/bifrost + reload meeting point
 
@@ -126,9 +126,9 @@ Semantics (binding): lookup error OR empty answer → keep last-known-good, coun
 - Modify: `cmd/bifrost/wire.go` (construct Runner when any pool has templates; initial holder content = `ExpandDNS(base, nil)` so templates never leak unexpanded), `cmd/bifrost/main.go` (`start("dns discovery", ...)` beside the checker), `cmd/bifrost/reload.go` (when the runner exists, hand the validated new config to `runner.Rerender` instead of `a.holder.Swap`; the RestartRequired/BindChange checks run unchanged before it)
 - Test: `cmd/bifrost/main_test.go`
 
-- [ ] **Step 1: Failing test** — main_test boots a config with a template + injectable lookup (add a test seam the way main_test already injects things — read how it boots; if it execs the real serve path, wire the LookupFunc through newApp with a package-level default that tests override) and asserts `/servers` lists `node-<ip>` members; SIGHUP with an edited file keeps members (fail-static across reload).
-- [ ] **Step 2: RED**. **Step 3: Implement.** **Step 4: GREEN** — `go test ./cmd/... -v` and full `go test ./...`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: wire dns discovery into serve and reload"`
+- [x] **Step 1: Failing test** — main_test boots a config with a template + injectable lookup (add a test seam the way main_test already injects things — read how it boots; if it execs the real serve path, wire the LookupFunc through newApp with a package-level default that tests override) and asserts `/servers` lists `node-<ip>` members; SIGHUP with an edited file keeps members (fail-static across reload).
+- [x] **Step 2: RED**. **Step 3: Implement.** **Step 4: GREEN** — `go test ./cmd/... -v` and full `go test ./...`.
+- [x] **Step 5: Commit** — `git commit -am "feat: wire dns discovery into serve and reload"`
 
 ### Task 5: Observability
 

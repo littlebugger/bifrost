@@ -1,22 +1,34 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/littlebugger/bifrost/internal/admin"
 	"github.com/littlebugger/bifrost/internal/balance"
 	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/discover"
 	"github.com/littlebugger/bifrost/internal/health"
 	"github.com/littlebugger/bifrost/internal/metrics"
 	"github.com/littlebugger/bifrost/internal/proxy"
 )
+
+// defaultLookup is the production internal/discover.LookupFunc: the
+// stdlib resolver, A+AAAA together. A package-level var rather than a
+// literal passed inline at the New call below so cmd/bifrost's own tests
+// can swap in a fake resolver (main_test.go) without a config knob that
+// would otherwise exist for nothing but tests.
+var defaultLookup discover.LookupFunc = func(ctx context.Context, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
 
 // This file is the whole assembly: every internal package meets here and
 // nowhere else. It stays construction-only on purpose — the components
@@ -35,7 +47,8 @@ type app struct {
 	checker *health.Checker
 	router  *balance.Router
 	relay   *proxy.Relay
-	admin   *admin.Server // nil when the config has no admin block
+	admin   *admin.Server    // nil when the config has no admin block
+	runner  *discover.Runner // nil when the config has no server_dns templates
 
 	smtpLn  net.Listener
 	adminLn net.Listener // nil when the config has no admin block
@@ -54,7 +67,21 @@ type app struct {
 // diagnostics checked by the caller).
 func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	holder := &config.Holder{}
-	holder.Swap(cfg)
+
+	// A Runner is built only when the config actually declares a
+	// server_dns template: it owns every holder swap from that point on
+	// (its own doc comment), and the holder's very first published value
+	// must already be the expanded form (zero members — the design doc's
+	// "first-ever resolution failing at startup" case) so a template
+	// never leaks unexpanded into a consumer that only ever reads
+	// Pool.Servers (internal/health, internal/balance, internal/proxy).
+	var runner *discover.Runner
+	initial := cfg
+	if hasDNSTemplates(cfg) {
+		runner = discover.New(holder, defaultLookup, lg, nil)
+		initial = config.ExpandDNS(cfg, nil)
+	}
+	holder.Swap(initial)
 
 	// metrics.New is called exactly once per process: admin.New registers
 	// the pull-side ServerCollector on this registry, and registering the
@@ -64,7 +91,7 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	checker := health.New(holder, nil, lg)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(time.Now().UnixNano())))
 
-	a := &app{cfgPath: cfgPath, lg: lg, holder: holder, metrics: m, checker: checker, router: router}
+	a := &app{cfgPath: cfgPath, lg: lg, holder: holder, metrics: m, checker: checker, router: router, runner: runner}
 
 	// router.Pick/router.Lease go in as closures, which is the whole
 	// reason PickFunc/LeaseFunc are function types: internal/proxy never
@@ -169,6 +196,18 @@ func (a *app) currentCert() (*tls.Certificate, error) {
 	a.certCache, a.certGen = &crt, cfg
 	a.lg.Info("listener certificate loaded", "cert", cfg.Listener.StartTLS.Cert)
 	return a.certCache, nil
+}
+
+// hasDNSTemplates reports whether any pool in cfg declares a server_dns
+// block — newApp's cue to build a discover.Runner and expand the holder's
+// initial content instead of swapping cfg in verbatim.
+func hasDNSTemplates(cfg *config.Config) bool {
+	for _, p := range cfg.Pools {
+		if len(p.DNSTemplates) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // minTLSVersion maps the configured min_version onto crypto/tls. The enum

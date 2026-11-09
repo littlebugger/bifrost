@@ -90,6 +90,15 @@ func RestartRequired(old, newCfg *Config) []string {
 	if old.Defaults.Timeouts.SessionMax != newCfg.Defaults.Timeouts.SessionMax {
 		add("session_max", old.Defaults.Timeouts.SessionMax, newCfg.Defaults.Timeouts.SessionMax)
 	}
+	if templateKeysChanged(old, newCfg) {
+		// internal/discover.Runner starts exactly one goroutine per
+		// server_dns template when Run begins and can neither start nor
+		// stop one afterward (its own doc comment) — identical in kind to
+		// BindChange/the listener-identity warnings above, just scoped to
+		// adding or removing a template rather than editing one already
+		// running.
+		out = append(out, "server_dns template set changed: restart required to apply")
+	}
 	if listenerAuthChanged(old.Listener.Auth, newCfg.Listener.Auth) {
 		// Bypasses add(from, to): a Session captures Listener.Auth at
 		// accept (see internal/proxy), so revoking or re-keying a user
@@ -128,6 +137,35 @@ func listenerAuthChanged(old, newCfg *ListenerAuth) bool {
 	sort.Strings(oldKeys)
 	sort.Strings(newKeys)
 	return !slices.Equal(oldKeys, newKeys)
+}
+
+// templateKeysChanged reports whether the set of server_dns templates
+// (by TemplateKey, pool+label) differs between old and newCfg — added,
+// removed, or both; order and membership deltas within an unchanged
+// template don't count, only the declared set itself.
+func templateKeysChanged(old, newCfg *Config) bool {
+	oldKeys := templateKeySet(old)
+	newKeys := templateKeySet(newCfg)
+	if len(oldKeys) != len(newKeys) {
+		return true
+	}
+	for k := range oldKeys {
+		if _, ok := newKeys[k]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// templateKeySet collects every (pool, template) pair cfg declares.
+func templateKeySet(cfg *Config) map[TemplateKey]struct{} {
+	keys := make(map[TemplateKey]struct{})
+	for _, p := range cfg.Pools {
+		for _, tmpl := range p.DNSTemplates {
+			keys[TemplateKey{Pool: p.Name, Template: tmpl.Name}] = struct{}{}
+		}
+	}
+	return keys
 }
 
 // authUserKeys reduces each AuthUser to one comparable string (its full

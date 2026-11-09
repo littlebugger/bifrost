@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestHolderSwapVisibleToReaders runs several reader goroutines calling
@@ -182,6 +183,44 @@ func TestRestartRequiredListenerAuthCleartext(t *testing.T) {
 	for _, w := range RestartRequired(oldCfg, identicalCfg) {
 		if strings.Contains(w, "listener auth changed") {
 			t.Errorf("RestartRequired(old, identical) = %v, want no listener auth warning for identical auth", w)
+		}
+	}
+}
+
+// TestRestartRequiredTemplateSetChanged: internal/discover.Runner starts
+// exactly one goroutine per server_dns template at process start and can
+// neither start nor stop one afterward (ruling after Task 3's review), so
+// a reload that adds (or removes) a server_dns block must warn restart
+// required — the same precedent as a listener-identity edit above — and
+// an identical template set between two configs must warn about nothing.
+func TestRestartRequiredTemplateSetChanged(t *testing.T) {
+	withoutTemplate := &Config{Pools: []Pool{
+		{Name: "routes", Servers: []Server{{Name: "static-extra", Address: "10.9.8.7:587", Weight: 1}}},
+	}}
+	withTemplate := &Config{Pools: []Pool{
+		{
+			Name:    "routes",
+			Servers: []Server{{Name: "static-extra", Address: "10.9.8.7:587", Weight: 1}},
+			DNSTemplates: []ServerDNS{
+				{Name: "node", Address: "svc.local:587", ResolveInterval: 30 * time.Second, Weight: 1},
+			},
+		},
+	}}
+
+	warnings := RestartRequired(withoutTemplate, withTemplate)
+	var found bool
+	for _, w := range warnings {
+		if strings.Contains(w, "server_dns template set changed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("RestartRequired(without, with) = %v, want a server_dns template set warning", warnings)
+	}
+
+	for _, w := range RestartRequired(withTemplate, withTemplate) {
+		if strings.Contains(w, "server_dns template set changed") {
+			t.Errorf("RestartRequired(with, with) = %v, want no template-set warning for an identical set", w)
 		}
 	}
 }

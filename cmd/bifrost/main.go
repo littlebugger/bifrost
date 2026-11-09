@@ -107,6 +107,9 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 		return proxy.Serve(sessionCtx, a.smtpLn, cfg, a.tlsCfg, a.relay, lg, a.metrics)
 	})
 	start("health checker", func() error { a.checker.Run(rootCtx); return nil })
+	if a.runner != nil {
+		start("dns discovery", func() error { a.runner.Run(rootCtx); return nil })
+	}
 	if a.adminLn != nil {
 		start("admin api", func() error { return a.admin.Serve(rootCtx, a.adminLn) })
 	}
