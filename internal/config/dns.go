@@ -10,15 +10,17 @@ import (
 // own label within that pool.
 type TemplateKey struct{ Pool, Template string }
 
-// maxTemplateMembers is the per-template expanded-member cap (the design
+// MaxTemplateMembers is the per-template expanded-member cap (the design
 // doc's "excess logged and truncated deterministically by sorted IP").
-const maxTemplateMembers = 256
+// Exported so internal/discover can log against the same number rather
+// than keep its own copy.
+const MaxTemplateMembers = 256
 
 // ExpandDNS returns a snapshot derived from base (the operator's loaded
 // config): every pool's DNSTemplates expanded into concrete Server entries
 // named "<template>-<ip>" (port from the template's own address), appended
 // after the pool's static servers in netip.Addr.Compare order and
-// truncated at maxTemplateMembers per template (sorted tail dropped). It
+// truncated at MaxTemplateMembers per template (sorted tail dropped). It
 // never mutates base; a pool with no templates shares base's Pool value
 // untouched.
 //
@@ -67,7 +69,7 @@ func expandPool(bp Pool, members map[TemplateKey][]netip.Addr) Pool {
 }
 
 // expandTemplate expands one server_dns template into its member Servers,
-// sorted by netip.Addr.Compare and truncated to maxTemplateMembers (the
+// sorted by netip.Addr.Compare and truncated to MaxTemplateMembers (the
 // sorted tail dropped). Every member clones tmpl's Weight/Backup/
 // MaxTransactions/Check verbatim; only Name and Address are per-member.
 func expandTemplate(tmpl ServerDNS, addrs []netip.Addr) []Server {
@@ -76,8 +78,8 @@ func expandTemplate(tmpl ServerDNS, addrs []netip.Addr) []Server {
 	}
 	sorted := slices.Clone(addrs)
 	slices.SortFunc(sorted, netip.Addr.Compare)
-	if len(sorted) > maxTemplateMembers {
-		sorted = sorted[:maxTemplateMembers]
+	if len(sorted) > MaxTemplateMembers {
+		sorted = sorted[:MaxTemplateMembers]
 	}
 
 	_, port, _ := net.SplitHostPort(tmpl.Address)

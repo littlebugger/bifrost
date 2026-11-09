@@ -364,3 +364,61 @@ func TestConcurrentRerenderAndDeltaSwapsRaceClean(t *testing.T) {
 		t.Errorf("goroutine leak after Run and the Rerender spammer both returned: %v", err)
 	}
 }
+
+// TestOrphanedTemplateGoesInert proves resolve's orphan guard: once a
+// Rerender drops a template from the base (Run never tears down its
+// goroutine — see Run's doc comment), a subsequent membership delta for
+// that same key must NOT swap, even though the loop keeps ticking.
+func TestOrphanedTemplateGoesInert(t *testing.T) {
+	holder := &config.Holder{}
+	base := testBase("routes", "node", "svc.local:587", 10*time.Millisecond)
+	holder.Swap(base)
+
+	stub := newLookupStub(addrsOf("192.0.2.1"))
+	r := New(holder, stub.fn, discardLog(), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	stub.waitCall(t)
+	_ = waitForSnapshot(t, holder, base)
+
+	// Drop the "node" template from the base entirely (operator removed
+	// the server_dns block) and Rerender it in.
+	edited := &config.Config{Pools: []config.Pool{{Name: "routes"}}}
+	r.Rerender(edited)
+	snapOrphaned := holder.Load()
+	if snapOrphaned == nil {
+		t.Fatal("Rerender did not install a snapshot")
+	}
+
+	// A new membership delta for the now-orphaned key must not swap: a
+	// few more ticks with a changed answer must leave the snapshot
+	// pointer untouched.
+	stub.set(addrsOf("192.0.2.1", "192.0.2.2"), nil)
+	for i := 0; i < 3; i++ {
+		stub.waitCall(t)
+	}
+	if cur := holder.Load(); cur != snapOrphaned {
+		t.Errorf("holder snapshot changed for an orphaned template, want it inert")
+	}
+}
+
+// TestJitterWithinBounds proves jitter's ±10% spread never exceeds its
+// bounds across many draws. No injection seam needed — jitter calls
+// top-level math/rand directly, which is safe to call from a test loop
+// exactly like production code does.
+func TestJitterWithinBounds(t *testing.T) {
+	const base = 100 * time.Millisecond
+	const tenth = base / 10 // integer math: exact ±10% bound, no float rounding to fight
+	lo := base - tenth
+	hi := base + tenth
+
+	for i := 0; i < 1000; i++ {
+		got := jitter(base)
+		if got < lo || got > hi {
+			t.Fatalf("draw %d: jitter(%v) = %v, want within [%v, %v]", i, base, got, lo, hi)
+		}
+	}
+}

@@ -18,11 +18,6 @@ import (
 	"github.com/littlebugger/bifrost/internal/config"
 )
 
-// maxTemplateMembers mirrors config's own (unexported) expanded-member
-// cap: ExpandDNS enforces the truncation itself, this package only logs
-// when an answer exceeds it.
-const maxTemplateMembers = 256
-
 // jitterFraction is the design doc's ±10% spread on ResolveInterval.
 const jitterFraction = 0.10
 
@@ -90,10 +85,15 @@ func New(h *config.Holder, lookup LookupFunc, lg *slog.Logger, m Metrics) *Runne
 // Run starts one goroutine per server_dns template in the CURRENT base
 // config (r.holder.Load() at call time) and blocks until ctx is
 // cancelled, then joins every goroutine it started before returning.
-// Templates added by a later Rerender are not picked up by an
-// already-running Run — Rerender only re-expands the existing
-// membership against the new base; it never grows the template set
-// Run is looping over.
+// Run's template set is fixed for its own lifetime: a later Rerender
+// only re-expands the existing membership against a new base, so it can
+// neither start a goroutine for a template the new base adds nor stop
+// one for a template the new base drops. A dropped template's loop
+// keeps ticking, but resolve's orphan guard makes it inert (no swap, no
+// counters, no log) the moment its key no longer matches r.base — so an
+// add or a remove of a server_dns block both require a process restart
+// to actually take effect; Task 4 warns on a reload that changes the
+// template set.
 func (r *Runner) Run(ctx context.Context) {
 	base := r.holder.Load()
 
@@ -123,6 +123,9 @@ func (r *Runner) Run(ctx context.Context) {
 // last-known membership and swaps, atomically (via mu) with the loops'
 // own delta-driven swaps. The reload path calls this instead of a bare
 // holder.Swap whenever the config has any server_dns templates.
+// Precondition: base must not be nil — callers always pass a freshly
+// loaded and validated config.Config, exactly like holder.Swap's own
+// callers.
 func (r *Runner) Rerender(base *config.Config) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -175,9 +178,9 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 		return
 	}
 
-	if len(addrs) > maxTemplateMembers {
+	if len(addrs) > config.MaxTemplateMembers {
 		r.lg.Warn("dns discovery answer exceeds member cap, will be truncated",
-			"pool", key.Pool, "template", key.Template, "answered", len(addrs), "cap", maxTemplateMembers)
+			"pool", key.Pool, "template", key.Template, "answered", len(addrs), "cap", config.MaxTemplateMembers)
 	}
 
 	sorted := slices.Clone(addrs)
@@ -186,6 +189,17 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Orphan guard: a later Rerender may have dropped this template from
+	// r.base (Run never tears down the per-template goroutine for it —
+	// see Run's doc comment). Once that happens this resolve must go
+	// inert: no swap, no changes counter, no gauge, no log — otherwise
+	// every tick would re-swap an unchanged derived config forever,
+	// pointlessly bumping the holder's identity for every other watcher
+	// (e.g. internal/health's reload-detection poll) to re-sync against.
+	if !templateExists(r.base, key) {
+		return
+	}
 
 	prev := r.members[key]
 	r.metrics.DiscoveredMembers(key.Pool, key.Template, len(sorted))
@@ -199,6 +213,27 @@ func (r *Runner) resolve(ctx context.Context, key config.TemplateKey, tmpl confi
 	r.metrics.DiscoveryChange(key.Template)
 	r.lg.Info("dns discovery membership changed",
 		"pool", key.Pool, "template", key.Template, "added", added, "removed", removed)
+}
+
+// templateExists reports whether key's (pool, template) pair is still
+// present in base — false once a Rerender has dropped it, which is
+// resolve's signal to go inert for that key.
+func templateExists(base *config.Config, key config.TemplateKey) bool {
+	if base == nil {
+		return false
+	}
+	for _, pool := range base.Pools {
+		if pool.Name != key.Pool {
+			continue
+		}
+		for _, tmpl := range pool.DNSTemplates {
+			if tmpl.Name == key.Template {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // diffMembers returns the addrs added/removed between prev and cur
