@@ -4,7 +4,7 @@
 
 **Goal:** `server_dns "name" { address = "host:port", resolve_interval = "30s", ... }` pool templates that expand at runtime into per-IP members (`name-<ip>`) with full per-member health, balancing, metrics, and reuse — fail-static on resolver errors/empty answers.
 
-**Architecture:** Discovery is an internal reload. A resolver loop per template; on a membership delta it builds a derived config snapshot (`config.ExpandDNS`) and swaps the holder — the relay, health checker (re-syncs on snapshot identity), and admin already honor swaps. Survivor members keep their `*config.Server` pointers across swaps (health-FSM and reuse-affinity continuity); the SIGHUP path re-renders through the same builder so file edits and membership compose.
+**Architecture:** Discovery is an internal reload. A resolver loop per template; on a membership delta it builds a derived config snapshot (`config.ExpandDNS`) and swaps the holder — the relay, health checker (re-syncs on snapshot identity), and admin already honor swaps. Continuity across swaps is name-based (the health checker's svrKey sync) — ExpandDNS is a plain rebuild with fresh pointers; the SIGHUP path re-renders through the same builder so file edits and membership compose.
 
 **Tech Stack:** Go stdlib only (`net.Resolver`, `netip`). New package `internal/discover` (runtime loop); builder lives in `internal/config` (needs unexported range fields for cloning).
 
@@ -76,11 +76,11 @@ type TemplateKey struct{ Pool, Template string }
 func ExpandDNS(base *Config, members map[TemplateKey][]netip.Addr) *Config
 ```
 
-- [ ] **Step 1: Failing tests** (pure, no DNS): expansion naming/order (`node-192.0.2.2` before `node-192.0.2.11`? assert SORTED BY netip.Addr.Compare, and state the expectation in the test name); member fields cloned from the template (weight/backup/check/auth creds); static servers precede members; stable member names/addresses across deltas (continuity key); truncation at 256 with deterministic drop (sorted tail); nil prev; template with zero members expands to nothing; base untouched (deep-compare before/after).
-- [ ] **Step 2: RED** — `go test ./internal/config/ -run TestExpandDNS -v`.
-- [ ] **Step 3: Implement** (~80 lines; shallow-copy Config and Pools slice, rebuild Servers slices only for pools with templates).
-- [ ] **Step 4: GREEN**.
-- [ ] **Step 5: Commit** — `git commit -am "feat: expand dns templates into derived config snapshots"`
+- [x] **Step 1: Failing tests** (pure, no DNS): expansion naming/order (`node-192.0.2.2` before `node-192.0.2.11`? assert SORTED BY netip.Addr.Compare, and state the expectation in the test name); member fields cloned from the template (weight/backup/check/auth creds); static servers precede members; stable member names/addresses across deltas (continuity key); truncation at 256 with deterministic drop (sorted tail); nil prev; template with zero members expands to nothing; base untouched (deep-compare before/after).
+- [x] **Step 2: RED** — `go test ./internal/config/ -run TestExpandDNS -v`.
+- [x] **Step 3: Implement** (~80 lines; shallow-copy Config and Pools slice, rebuild Servers slices only for pools with templates).
+- [x] **Step 4: GREEN**.
+- [x] **Step 5: Commit** — `git commit -am "feat: expand dns templates into derived config snapshots"`
 
 ### Task 3: Resolver runtime — `internal/discover`
 
@@ -123,7 +123,7 @@ Semantics (binding): lookup error OR empty answer → keep last-known-good, coun
 ### Task 4: Wiring — cmd/bifrost + reload meeting point
 
 **Files:**
-- Modify: `cmd/bifrost/wire.go` (construct Runner when any pool has templates; initial holder content = `ExpandDNS(base, nil, nil)` so templates never leak unexpanded), `cmd/bifrost/main.go` (`start("dns discovery", ...)` beside the checker), `cmd/bifrost/reload.go` (when the runner exists, hand the validated new config to `runner.Rerender` instead of `a.holder.Swap`; the RestartRequired/BindChange checks run unchanged before it)
+- Modify: `cmd/bifrost/wire.go` (construct Runner when any pool has templates; initial holder content = `ExpandDNS(base, nil)` so templates never leak unexpanded), `cmd/bifrost/main.go` (`start("dns discovery", ...)` beside the checker), `cmd/bifrost/reload.go` (when the runner exists, hand the validated new config to `runner.Rerender` instead of `a.holder.Swap`; the RestartRequired/BindChange checks run unchanged before it)
 - Test: `cmd/bifrost/main_test.go`
 
 - [ ] **Step 1: Failing test** — main_test boots a config with a template + injectable lookup (add a test seam the way main_test already injects things — read how it boots; if it execs the real serve path, wire the LookupFunc through newApp with a package-level default that tests override) and asserts `/servers` lists `node-<ip>` members; SIGHUP with an edited file keeps members (fail-static across reload).
