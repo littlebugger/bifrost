@@ -14,7 +14,7 @@
 
 - No new module dependencies; stdlib only. No real DNS in unit tests — the lookup is an injected `func(ctx, host) ([]netip.Addr, error)`.
 - Fail-static is a hard rule: a lookup error or empty answer NEVER shrinks membership; it logs and counts.
-- Survivor pointer identity is a hard rule: an IP present before and after a delta keeps its exact `*config.Server` object (health state + reuse affinity depend on it).
+- Survivor continuity is NAME-based (ruling 2026-11-09): health state persists across swaps via the checker's svrKey sync; ExpandDNS does a plain rebuild with fresh pointers, and member names must be deterministic and stable.
 - Commit messages: plain `type: subject`. Branch: `feat/dns-discovery`.
 - `gofumpt -l .` clean; `go vet ./...` clean. Tasks 5–7 run full `go test ./...`.
 
@@ -46,11 +46,11 @@ type ServerDNS struct {
 // Pool gains: DNSTemplates []ServerDNS
 ```
 
-- [ ] **Step 1: Failing tests** — `dns-template.hcl` (pool with one `server_dns` + one static `server`; pool with ONLY a template — must validate despite zero static servers: adjust the existing empty-pool rule to count templates); load assertions for every field incl. resolved Check inheriting pool tier + auth creds in Check (pool auth + template → `Check.AuthUsername` populated, mirroring servers). Validation rows: IP-literal host → `"server_dns address must be a hostname"`; `resolve_interval = "500ms"` → `"resolve_interval out of range"`; template label colliding with a server name in the same pool → `"duplicate server name"` (same summary as the existing dup rule — members share the server namespace).
-- [ ] **Step 2: RED** — `go test ./internal/config/ -run 'TestLoad|TestValidate|TestDefaults' -v`.
-- [ ] **Step 3: Implement** — decode mirrors `rawServer` (labeled block, attr ranges); defaults.go resolves template Check through the same chain servers use (read `resolveCheck`'s server loop and add the template loop beside it, including the pool-auth → CheckParams copy from `resolvePoolAuth`); IP-literal detection via `netip.ParseAddr` on the split host.
-- [ ] **Step 4: GREEN** — `go test ./internal/config/ -v`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: decode server_dns pool templates"`
+- [x] **Step 1: Failing tests** — `dns-template.hcl` (pool with one `server_dns` + one static `server`; pool with ONLY a template — must validate despite zero static servers: adjust the existing empty-pool rule to count templates); load assertions for every field incl. resolved Check inheriting pool tier + auth creds in Check (pool auth + template → `Check.AuthUsername` populated, mirroring servers). Validation rows: IP-literal host → `"server_dns address must be a hostname"`; `resolve_interval = "500ms"` → `"resolve_interval out of range"`; template label colliding with a server name in the same pool → `"duplicate server name"` (same summary as the existing dup rule — members share the server namespace).
+- [x] **Step 2: RED** — `go test ./internal/config/ -run 'TestLoad|TestValidate|TestDefaults' -v`.
+- [x] **Step 3: Implement** — decode mirrors `rawServer` (labeled block, attr ranges); defaults.go resolves template Check through the same chain servers use (read `resolveCheck`'s server loop and add the template loop beside it, including the pool-auth → CheckParams copy from `resolvePoolAuth`); IP-literal detection via `netip.ParseAddr` on the split host.
+- [x] **Step 4: GREEN** — `go test ./internal/config/ -v`.
+- [x] **Step 5: Commit** — `git commit -am "feat: decode server_dns pool templates"`
 
 ### Task 2: Derived-snapshot builder — `config.ExpandDNS`
 
@@ -68,14 +68,15 @@ type TemplateKey struct{ Pool, Template string }
 // ExpandDNS returns a snapshot derived from base (the operator's loaded
 // config): every pool's DNSTemplates expanded into concrete Server
 // entries named "<template>-<ip>", appended after the pool's static
-// servers in sorted-IP order, truncated at 256 per template. prev (may
-// be nil) supplies survivor identity: a member whose pool, name, and
-// address match one in prev reuses prev's *Server pointer verbatim.
-// base is never mutated; pools without templates share base's Pool value.
-func ExpandDNS(base, prev *Config, members map[TemplateKey][]netip.Addr) *Config
+// servers in sorted-IP order, truncated at 256 per template. A plain
+// deterministic rebuild: fresh Server objects every call — continuity
+// across swaps is name-based (the health checker's key sync), never
+// pointer-based. base is never mutated; pools without templates share
+// base's Pool value.
+func ExpandDNS(base *Config, members map[TemplateKey][]netip.Addr) *Config
 ```
 
-- [ ] **Step 1: Failing tests** (pure, no DNS): expansion naming/order (`node-192.0.2.2` before `node-192.0.2.11`? assert SORTED BY netip.Addr.Compare, and state the expectation in the test name); member fields cloned from the template (weight/backup/check/auth creds); static servers precede members; survivor pointer reuse (`expanded2.Pools[0].Servers[i] == expanded1.Pools[0].Servers[j]` — same pointer — for the unchanged IP, fresh pointer for the added one); truncation at 256 with deterministic drop (sorted tail); nil prev; template with zero members expands to nothing; base untouched (deep-compare before/after).
+- [ ] **Step 1: Failing tests** (pure, no DNS): expansion naming/order (`node-192.0.2.2` before `node-192.0.2.11`? assert SORTED BY netip.Addr.Compare, and state the expectation in the test name); member fields cloned from the template (weight/backup/check/auth creds); static servers precede members; stable member names/addresses across deltas (continuity key); truncation at 256 with deterministic drop (sorted tail); nil prev; template with zero members expands to nothing; base untouched (deep-compare before/after).
 - [ ] **Step 2: RED** — `go test ./internal/config/ -run TestExpandDNS -v`.
 - [ ] **Step 3: Implement** (~80 lines; shallow-copy Config and Pools slice, rebuild Servers slices only for pools with templates).
 - [ ] **Step 4: GREEN**.
@@ -111,9 +112,9 @@ func (r *Runner) Run(ctx context.Context)
 func (r *Runner) Rerender(base *config.Config)
 ```
 
-Semantics (binding): lookup error OR empty answer → keep last-known-good, count `result=error|empty`, log at Warn with the template key — no swap. Delta (set comparison on sorted addrs) → `ExpandDNS(base, holder.Load(), members)` + Swap + Info log naming added/removed IPs + `changes` counter. No delta → nothing (a stable farm never swaps). First resolution at startup happens inline in Run before the ticker (members available ~immediately), still fail-static.
+Semantics (binding): lookup error OR empty answer → keep last-known-good, count `result=error|empty`, log at Warn with the template key — no swap. Delta (set comparison on sorted addrs) → `ExpandDNS(base, members)` + Swap + Info log naming added/removed IPs + `changes` counter. No delta → nothing (a stable farm never swaps). First resolution at startup happens inline in Run before the ticker (members available ~immediately), still fail-static.
 
-- [ ] **Step 1: Failing tests** (fake lookup, intervals of 10–20ms): initial resolve populates members (holder snapshot has them); flip {A}→{A,B}→{B} drives adds/removes with survivor pointer checks against the holder's snapshots; error keeps membership; empty keeps membership; Rerender with an edited base keeps membership while applying the edit; concurrent Rerender + delta swaps race-clean (`-race`).
+- [ ] **Step 1: Failing tests** (fake lookup, intervals of 10–20ms): initial resolve populates members (holder snapshot has them); flip {A}→{A,B}→{B} drives adds/removes with stable member names across snapshots; error keeps membership; empty keeps membership; Rerender with an edited base keeps membership while applying the edit; concurrent Rerender + delta swaps race-clean (`-race`).
 - [ ] **Step 2: RED** — `go test ./internal/discover/ -v`.
 - [ ] **Step 3: Implement** (~150 lines).
 - [ ] **Step 4: GREEN** — `go test -race ./internal/discover/ -v`.

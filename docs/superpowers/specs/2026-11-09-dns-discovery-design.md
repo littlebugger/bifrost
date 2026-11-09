@@ -51,16 +51,20 @@ changes, admin, metrics) re-reads it. Discovery rides exactly that:
   snapshot): build a derived Config — the template expanded into
   concrete `Server` entries — and `holder.Swap` it. No delta, no swap:
   a stable farm costs zero churn.
-- **Survivor identity:** members present in both the old and new answer
-  keep their existing `*config.Server` object (copied by pointer into
-  the derived snapshot). This is what preserves their health-FSM state
-  (keyed like a normal reload) and their session reuse-affinity
-  (pointer identity) across swaps. Added members get fresh objects and
-  enter as Unknown → must pass `rise` probes before eligibility, the
-  normal FSM path. Removed members simply vanish from the next
-  snapshot: in-flight transactions finish on their leases (snapshot
-  semantics already guarantee this for SIGHUP reloads), and cached
-  affinity conns to them die on the pointer mismatch at next reuse.
+- **Survivor identity is NAME-based, not pointer-based** (ruling
+  2026-11-09, after verifying internal/health: the checker keys
+  serverEntry/serverHealth by svrKey and persists them across holder
+  swaps; its *Server pointer map is a secondary index rebuilt per
+  sync). ExpandDNS therefore does a plain deterministic rebuild on
+  every delta — fresh Server objects — and survivor continuity comes
+  from stable member NAMES (`<template>-<ip>`): health-FSM state,
+  probe counters, and admin overrides all persist by key. The one
+  thing fresh pointers cost is session reuse-affinity to that pool for
+  that single transition — the cached conn fails the pointer match and
+  the session silently re-dials, the feature's own documented fallback.
+  Added members enter as Unknown → `rise` probes, the normal FSM path.
+  Removed members vanish from the next snapshot: in-flight
+  transactions finish on their leases, cached conns die on mismatch.
 - SIGHUP interplay: an operator reload re-renders templates from the
   resolver's last-known answer (the resolver owns membership; the file
   owns everything else). The derived-snapshot builder is the single
