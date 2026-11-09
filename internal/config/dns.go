@@ -22,23 +22,26 @@ const maxTemplateMembers = 256
 // never mutates base; a pool with no templates shares base's Pool value
 // untouched.
 //
-// prev (nil on the very first expansion) supplies survivor identity: a
-// member whose pool, name, and address match one already in prev reuses
-// prev's exact *Server — the pointer identity internal/health and
-// internal/proxy's reuse-affinity key on. This only holds when prev is the
-// immediately preceding ExpandDNS output for the same base (the discovery
-// driver must thread calls one at a time, never two derivations racing off
-// the same prev): a pure membership GROWTH reuses prev's Servers backing
-// array outright (new members land in its already-reserved spare capacity,
-// which is why every build reserves maxTemplateMembers per template up
-// front, memory no published snapshot's own length can reach — safe
-// without a lock); anything else for a pool (a removal, or a reordering
-// insert) falls back to a fresh rebuild, which starts that pool's identity
-// over from scratch. Good enough for the common case (a farm that mostly
-// grows); ponytail: full general-case identity preservation under
-// arbitrary churn needs Pool.Servers to become []*Server, a field-type
-// change out of scope here (flagged in the task report).
-func ExpandDNS(base, prev *Config, members map[TemplateKey][]netip.Addr) *Config {
+// Every call is a plain, deterministic rebuild: no prior snapshot is
+// consulted, and no *Server is ever reused across calls — two expansions
+// of the same membership return equal names/addresses/fields at fresh
+// pointers, not the same pointers. Continuity across a membership delta is
+// NAME-based, not pointer-based: internal/health.Checker already keys its
+// per-server state (svrKey = pool+server name) and refreshes srv/params in
+// place on every sync, so a member whose name persists keeps its health
+// FSM regardless of *Server identity. The one thing pointer identity would
+// have bought — internal/proxy's reuse-affinity cache recognizing a
+// survivor across a swap — degrades gracefully to its own documented
+// fallback (one silent re-dial) when the pointer doesn't match; that's a
+// deliberately cheaper trade than carrying a backing-array-reuse
+// invariant for it (see docs/superpowers/specs/2026-11-09-dns-discovery-
+// design.md, amended).
+//
+// Callers must not derive two snapshots concurrently (e.g. two templates'
+// resolver goroutines racing to expand the same base at once): nothing
+// here is guarded by a lock, so the discovery driver (Task 3) must
+// serialize ExpandDNS calls and the Holder.Swap that follows each one.
+func ExpandDNS(base *Config, members map[TemplateKey][]netip.Addr) *Config {
 	out := *base
 	out.Pools = make([]Pool, len(base.Pools))
 	for i, bp := range base.Pools {
@@ -46,33 +49,19 @@ func ExpandDNS(base, prev *Config, members map[TemplateKey][]netip.Addr) *Config
 			out.Pools[i] = bp
 			continue
 		}
-		out.Pools[i] = expandPool(bp, findPool(prev, bp.Name), members)
+		out.Pools[i] = expandPool(bp, members)
 	}
 	return &out
 }
 
 // expandPool rebuilds one pool's Servers: bp's static servers, then every
-// template's expanded members in declaration order, reusing prevPool's
-// backing array when that is a pure append (see ExpandDNS's doc).
-func expandPool(bp Pool, prevPool *Pool, members map[TemplateKey][]netip.Addr) Pool {
-	static := bp.Servers
-	var target []Server
+// template's expanded members, in declaration order.
+func expandPool(bp Pool, members map[TemplateKey][]netip.Addr) Pool {
+	combined := make([]Server, 0, len(bp.Servers))
+	combined = append(combined, bp.Servers...)
 	for _, tmpl := range bp.DNSTemplates {
-		target = append(target, expandTemplate(tmpl, members[TemplateKey{Pool: bp.Name, Template: tmpl.Name}])...)
+		combined = append(combined, expandTemplate(tmpl, members[TemplateKey{Pool: bp.Name, Template: tmpl.Name}])...)
 	}
-
-	if prevPool != nil && len(prevPool.Servers) >= len(static) &&
-		serversEqual(prevPool.Servers[:len(static)], static) {
-		prevMembers := prevPool.Servers[len(static):]
-		if isPrefixOf(prevMembers, target) {
-			bp.Servers = append(prevPool.Servers, target[len(prevMembers):]...)
-			return bp
-		}
-	}
-
-	combined := make([]Server, 0, len(static)+maxTemplateMembers*len(bp.DNSTemplates))
-	combined = append(combined, static...)
-	combined = append(combined, target...)
 	bp.Servers = combined
 	return bp
 }
@@ -104,42 +93,4 @@ func expandTemplate(tmpl ServerDNS, addrs []netip.Addr) []Server {
 		}
 	}
 	return out
-}
-
-// findPool returns prev's pool named name, or nil if prev is nil or has no
-// such pool.
-func findPool(prev *Config, name string) *Pool {
-	if prev == nil {
-		return nil
-	}
-	for i := range prev.Pools {
-		if prev.Pools[i].Name == name {
-			return &prev.Pools[i]
-		}
-	}
-	return nil
-}
-
-// isPrefixOf reports whether prevMembers, in order, is exactly the first
-// len(prevMembers) entries of target (by Name+Address) — the "pure
-// append" condition expandPool's survivor reuse requires.
-func isPrefixOf(prevMembers, target []Server) bool {
-	if len(prevMembers) > len(target) {
-		return false
-	}
-	return serversEqual(prevMembers, target[:len(prevMembers)])
-}
-
-// serversEqual reports whether a and b name+address-match pairwise (the
-// only fields that identify a server for survivor/prefix purposes here).
-func serversEqual(a, b []Server) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Name != b[i].Name || a[i].Address != b[i].Address {
-			return false
-		}
-	}
-	return true
 }

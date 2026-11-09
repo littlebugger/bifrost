@@ -58,7 +58,7 @@ func TestExpandDNSMembersSortedByAddrCompareNotLexical(t *testing.T) {
 		nodeKey(): addrs("192.0.2.11", "192.0.2.2"),
 	}
 
-	out := ExpandDNS(base, nil, members)
+	out := ExpandDNS(base, members)
 
 	routes := poolNamed(out.Pools, "routes")
 	if routes == nil {
@@ -83,7 +83,7 @@ func TestExpandDNSMemberFieldsClonedFromTemplate(t *testing.T) {
 	base := dnsTestBase()
 	members := map[TemplateKey][]netip.Addr{nodeKey(): addrs("192.0.2.2")}
 
-	out := ExpandDNS(base, nil, members)
+	out := ExpandDNS(base, members)
 	routes := poolNamed(out.Pools, "routes")
 	member := serverNamed(routes.Servers, "node-192.0.2.2")
 	if member == nil {
@@ -114,7 +114,7 @@ func TestExpandDNSStaticServersPrecedeMembers(t *testing.T) {
 	base := dnsTestBase()
 	members := map[TemplateKey][]netip.Addr{nodeKey(): addrs("192.0.2.2")}
 
-	out := ExpandDNS(base, nil, members)
+	out := ExpandDNS(base, members)
 	routes := poolNamed(out.Pools, "routes")
 	if len(routes.Servers) != 2 {
 		t.Fatalf("len(routes.Servers) = %d, want 2", len(routes.Servers))
@@ -127,37 +127,49 @@ func TestExpandDNSStaticServersPrecedeMembers(t *testing.T) {
 	}
 }
 
-// TestExpandDNSSurvivorKeepsPointerAcrossAdd is the hard rule: a second
-// expansion that only ADDS a member must reuse the exact *Server for the
-// unchanged IP, and hand out a fresh one for the added IP.
-func TestExpandDNSSurvivorKeepsPointerAcrossAdd(t *testing.T) {
+// TestExpandDNSContinuityIsNameBasedNotPointerBased is the (amended) hard
+// rule: ExpandDNS is a plain rebuild. A member whose membership persists
+// across two calls keeps the same name/address (the key internal/health
+// and internal/proxy's continuity actually ride on) but NEVER the same
+// *Server — every call hands out entirely fresh objects, even for
+// unchanged members. This documents the rebuild semantics the survivor-
+// pointer-reuse mechanism was deliberately dropped in favor of.
+func TestExpandDNSContinuityIsNameBasedNotPointerBased(t *testing.T) {
 	base := dnsTestBase()
 
-	expanded1 := ExpandDNS(base, nil, map[TemplateKey][]netip.Addr{
+	gen1 := ExpandDNS(base, map[TemplateKey][]netip.Addr{
 		nodeKey(): addrs("192.0.2.2"),
 	})
-	expanded2 := ExpandDNS(base, expanded1, map[TemplateKey][]netip.Addr{
+	gen2 := ExpandDNS(base, map[TemplateKey][]netip.Addr{
 		nodeKey(): addrs("192.0.2.2", "192.0.2.11"),
 	})
 
-	r1 := poolNamed(expanded1.Pools, "routes")
-	r2 := poolNamed(expanded2.Pools, "routes")
+	r1 := poolNamed(gen1.Pools, "routes")
+	r2 := poolNamed(gen2.Pools, "routes")
 
-	survivor1 := serverNamed(r1.Servers, "node-192.0.2.2")
-	survivor2 := serverNamed(r2.Servers, "node-192.0.2.2")
-	if survivor1 == nil || survivor2 == nil {
-		t.Fatalf("survivor member missing: gen1=%v gen2=%v", survivor1, survivor2)
+	persisted1 := serverNamed(r1.Servers, "node-192.0.2.2")
+	persisted2 := serverNamed(r2.Servers, "node-192.0.2.2")
+	if persisted1 == nil || persisted2 == nil {
+		t.Fatalf("persisted member missing: gen1=%v gen2=%v", persisted1, persisted2)
 	}
-	if survivor1 != survivor2 {
-		t.Errorf("survivor *Server changed identity across an add-only delta: %p != %p", survivor1, survivor2)
+	// Name-based continuity: same logical member, same Name/Address/fields.
+	if persisted1.Name != persisted2.Name || persisted1.Address != persisted2.Address {
+		t.Errorf("persisted member's identity drifted: gen1=%+v gen2=%+v", persisted1, persisted2)
+	}
+	if !reflect.DeepEqual(*persisted1, *persisted2) {
+		t.Errorf("persisted member's cloned fields drifted: gen1=%+v gen2=%+v", *persisted1, *persisted2)
+	}
+	// NOT pointer-based: ExpandDNS never reuses a *Server across calls.
+	if persisted1 == persisted2 {
+		t.Errorf("persisted member kept the same *Server pointer across calls; ExpandDNS must always rebuild fresh")
 	}
 
 	added := serverNamed(r2.Servers, "node-192.0.2.11")
 	if added == nil {
 		t.Fatalf("no member %q in gen2", "node-192.0.2.11")
 	}
-	if added == survivor1 {
-		t.Errorf("freshly added member reused an existing *Server pointer")
+	if added == persisted1 || added == persisted2 {
+		t.Errorf("freshly added member aliased an existing *Server pointer")
 	}
 }
 
@@ -177,7 +189,7 @@ func TestExpandDNSTruncatesAt256SortedTailDropped(t *testing.T) {
 	copy(shuffled, all)
 	sort.Slice(shuffled, func(i, j int) bool { return shuffled[i].String() > shuffled[j].String() })
 
-	out := ExpandDNS(base, nil, map[TemplateKey][]netip.Addr{nodeKey(): shuffled})
+	out := ExpandDNS(base, map[TemplateKey][]netip.Addr{nodeKey(): shuffled})
 	routes := poolNamed(out.Pools, "routes")
 	members := routes.Servers[1:] // after the one static server
 	if len(members) != 256 {
@@ -194,23 +206,12 @@ func TestExpandDNSTruncatesAt256SortedTailDropped(t *testing.T) {
 	}
 }
 
-// TestExpandDNSNilPrev proves a nil prev (first-ever expansion) builds the
-// snapshot without panicking and with no survivor to reuse.
-func TestExpandDNSNilPrev(t *testing.T) {
-	base := dnsTestBase()
-	out := ExpandDNS(base, nil, map[TemplateKey][]netip.Addr{nodeKey(): addrs("192.0.2.2")})
-	routes := poolNamed(out.Pools, "routes")
-	if serverNamed(routes.Servers, "node-192.0.2.2") == nil {
-		t.Fatalf("expected member node-192.0.2.2 with a nil prev")
-	}
-}
-
 // TestExpandDNSZeroMembersExpandsToNothing proves a template with no
 // resolved addresses (an absent or empty map entry) contributes no
 // members: the pool's Servers is exactly its static servers.
 func TestExpandDNSZeroMembersExpandsToNothing(t *testing.T) {
 	base := dnsTestBase()
-	out := ExpandDNS(base, nil, map[TemplateKey][]netip.Addr{})
+	out := ExpandDNS(base, map[TemplateKey][]netip.Addr{})
 	routes := poolNamed(out.Pools, "routes")
 	if len(routes.Servers) != 1 {
 		t.Fatalf("len(routes.Servers) = %d, want 1 (static only, template unexpanded)", len(routes.Servers))
@@ -222,13 +223,13 @@ func TestExpandDNSZeroMembersExpandsToNothing(t *testing.T) {
 
 // TestExpandDNSBaseNeverMutated proves ExpandDNS never writes through
 // base: a deep copy taken before the call still deep-equals base after it,
-// across a chain of two expansions (nil prev, then a non-nil prev).
+// across two successive expansions.
 func TestExpandDNSBaseNeverMutated(t *testing.T) {
 	base := dnsTestBase()
 	before := deepCopyConfigForTest(t, base)
 
-	expanded1 := ExpandDNS(base, nil, map[TemplateKey][]netip.Addr{nodeKey(): addrs("192.0.2.2")})
-	ExpandDNS(base, expanded1, map[TemplateKey][]netip.Addr{
+	ExpandDNS(base, map[TemplateKey][]netip.Addr{nodeKey(): addrs("192.0.2.2")})
+	ExpandDNS(base, map[TemplateKey][]netip.Addr{
 		nodeKey(): addrs("192.0.2.2", "192.0.2.11"),
 	})
 
