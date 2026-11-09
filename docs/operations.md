@@ -780,8 +780,10 @@ proven by `TestRestartRequiredTemplateSetChanged`
 
 ### Observability
 
-Three metrics, all labeled `template` as `"pool/name"` (so two pools
-that happen to name a template identically still get distinct series):
+Three metrics. The two counters compose `template` as `"pool/name"` (so
+two pools that happen to name a template identically still get distinct
+series); the gauge instead carries `pool` and `template` as two separate
+labels:
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
