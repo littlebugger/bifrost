@@ -77,7 +77,8 @@ func TestValidateDiagnostics(t *testing.T) {
 		{"negative reuse_envelopes", "testdata/bad-reuse-negative.hcl", "reuse_envelopes out of range", hcl.DiagError, 3},
 
 		{"server_dns address must be a hostname", "testdata/bad-dns-ip-literal.hcl", "server_dns address must be a hostname", hcl.DiagError, 5},
-		{"server_dns resolve_interval out of range", "testdata/bad-dns-interval.hcl", "resolve_interval out of range", hcl.DiagError, 0},
+		{"server_dns address must be a hostname (bracketed IPv6)", "testdata/bad-dns-ip-literal-v6.hcl", "server_dns address must be a hostname", hcl.DiagError, 6},
+		{"server_dns resolve_interval out of range", "testdata/bad-dns-interval.hcl", "resolve_interval out of range", hcl.DiagError, 6},
 		{"server_dns duplicate name shares server namespace", "testdata/bad-dns-dup-name.hcl", "Duplicate server name", hcl.DiagError, 7},
 	}
 
