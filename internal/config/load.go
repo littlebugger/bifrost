@@ -81,6 +81,9 @@ func resolveBackendCAs(cfg *Config) hcl.Diagnostics {
 		for j := range pool.Servers {
 			pool.Servers[j].Check.CAPool = certPool
 		}
+		for j := range pool.DNSTemplates {
+			pool.DNSTemplates[j].Check.CAPool = certPool
+		}
 	}
 
 	// password_file (a Kubernetes secret mount, typically) is read here,
@@ -134,6 +137,11 @@ func resolveBackendCAs(cfg *Config) hcl.Diagnostics {
 			pool.Servers[j].Check.AuthUsername = pool.Auth.Username
 			pool.Servers[j].Check.AuthPassword = pool.Auth.Password
 			pool.Servers[j].Check.AuthAllowCleartext = pool.Auth.AllowCleartext
+		}
+		for j := range pool.DNSTemplates {
+			pool.DNSTemplates[j].Check.AuthUsername = pool.Auth.Username
+			pool.DNSTemplates[j].Check.AuthPassword = pool.Auth.Password
+			pool.DNSTemplates[j].Check.AuthAllowCleartext = pool.Auth.AllowCleartext
 		}
 	}
 
@@ -350,6 +358,37 @@ func (r *rawServer) convert() (Server, hcl.Diagnostics) {
 	return s, diags
 }
 
+func (r *rawServerDNS) convert() (ServerDNS, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+	sd := ServerDNS{
+		Name:            r.Name,
+		Address:         r.Address,
+		Weight:          intOr(r.Weight, 0),
+		Backup:          r.Backup,
+		MaxTransactions: intOr(r.MaxTransactions, 0),
+		rng:             r.Range,
+	}
+	if r.ResolveInterval != "" {
+		d, err := parseDuration(r.ResolveInterval)
+		if err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid duration",
+				Detail:   err.Error(),
+				Subject:  &r.Range,
+			})
+		}
+		sd.ResolveInterval = d
+		sd.resolveIntervalRange = r.ResolveIntervalRange
+	}
+	if r.Check != nil {
+		c, cd := r.Check.convert()
+		diags = append(diags, cd...)
+		sd.Check = c
+	}
+	return sd, diags
+}
+
 func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 	var diags hcl.Diagnostics
 	p := Pool{
@@ -379,6 +418,11 @@ func (r *rawPool) convert() (Pool, hcl.Diagnostics) {
 		s, sd := rs.convert()
 		diags = append(diags, sd...)
 		p.Servers = append(p.Servers, s)
+	}
+	for _, rt := range r.DNSTemplates {
+		t, td := rt.convert()
+		diags = append(diags, td...)
+		p.DNSTemplates = append(p.DNSTemplates, t)
 	}
 	if r.Auth != nil {
 		p.Auth = &PoolAuth{

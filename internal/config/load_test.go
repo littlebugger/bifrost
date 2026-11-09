@@ -38,6 +38,15 @@ func serverNamed(servers []Server, name string) *Server {
 	return nil
 }
 
+func serverDNSNamed(templates []ServerDNS, name string) *ServerDNS {
+	for i := range templates {
+		if templates[i].Name == name {
+			return &templates[i]
+		}
+	}
+	return nil
+}
+
 // mustLoad loads path and fails the test if it decodes with any error
 // diagnostic (warnings, e.g. the missing-admin-block warning, are fine).
 func mustLoad(t *testing.T, path string) *Config {
@@ -247,6 +256,69 @@ func TestLoadAuthPasswordFile(t *testing.T) {
 	}
 	if len(outgoing.Servers) == 0 || outgoing.Servers[0].Check.AuthPassword != "pa55w0rd" {
 		t.Fatalf("Servers[0].Check.AuthPassword = %q, want %q", outgoing.Servers[0].Check.AuthPassword, "pa55w0rd")
+	}
+}
+
+// TestLoadServerDNS proves a server_dns template decodes every field, rides
+// the same defaults cascade as a Server (pool tier Check, pool auth creds
+// copied into Check), and that a pool consisting of only a template (zero
+// static servers) still validates.
+func TestLoadServerDNS(t *testing.T) {
+	cfg := mustLoad(t, "testdata/dns-template.hcl")
+
+	routes := poolNamed(cfg.Pools, "routes")
+	if routes == nil {
+		t.Fatalf("no pool named %q", "routes")
+	}
+	if len(routes.DNSTemplates) != 1 {
+		t.Fatalf("len(routes.DNSTemplates) = %d, want 1", len(routes.DNSTemplates))
+	}
+	node := serverDNSNamed(routes.DNSTemplates, "node")
+	if node == nil {
+		t.Fatalf("no server_dns template named %q", "node")
+	}
+	if node.Address != "mta.headless.svc.cluster.local:587" {
+		t.Errorf("node.Address = %q, want %q", node.Address, "mta.headless.svc.cluster.local:587")
+	}
+	if node.ResolveInterval != 45*time.Second {
+		t.Errorf("node.ResolveInterval = %s, want 45s", node.ResolveInterval)
+	}
+	if node.Weight != 3 {
+		t.Errorf("node.Weight = %d, want 3", node.Weight)
+	}
+	if !node.Backup {
+		t.Errorf("node.Backup = false, want true")
+	}
+	if node.MaxTransactions != 200 {
+		t.Errorf("node.MaxTransactions = %d, want 200", node.MaxTransactions)
+	}
+	if node.Check.Level != "banner" {
+		t.Errorf("node.Check.Level = %q, want %q (from the template's own check block)", node.Check.Level, "banner")
+	}
+	if node.Check.TLS != "starttls" {
+		t.Errorf("node.Check.TLS = %q, want %q (resolved from pool.backend_tls)", node.Check.TLS, "starttls")
+	}
+	if node.Check.AuthUsername != "rttskr-team" || node.Check.AuthPassword != "pa55w0rd" {
+		t.Errorf("node.Check auth = %+v, want pool auth creds copied in (mirroring servers)", node.Check)
+	}
+
+	extra := serverNamed(routes.Servers, "static-extra")
+	if extra == nil {
+		t.Fatalf("no server named %q (templates must not displace static servers)", "static-extra")
+	}
+
+	dnsOnly := poolNamed(cfg.Pools, "dns-only")
+	if dnsOnly == nil {
+		t.Fatalf("no pool named %q", "dns-only")
+	}
+	if len(dnsOnly.Servers) != 0 {
+		t.Errorf("dns-only.Servers = %+v, want none", dnsOnly.Servers)
+	}
+	if len(dnsOnly.DNSTemplates) != 1 {
+		t.Fatalf("len(dns-only.DNSTemplates) = %d, want 1", len(dnsOnly.DNSTemplates))
+	}
+	if got := dnsOnly.DNSTemplates[0].ResolveInterval; got != 30*time.Second {
+		t.Errorf("dns-only template ResolveInterval = %s, want the 30s built-in default", got)
 	}
 }
 

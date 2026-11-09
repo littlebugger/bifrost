@@ -75,6 +75,10 @@ func TestValidateDiagnostics(t *testing.T) {
 		{"pool auth password_file unreadable", "testdata/bad-pool-auth-file-unreadable.hcl", "pool auth password_file unreadable", hcl.DiagError, 0},
 		{"pool auth password_file is empty", "testdata/bad-pool-auth-file-empty.hcl", "pool auth password_file is empty", hcl.DiagError, 0},
 		{"negative reuse_envelopes", "testdata/bad-reuse-negative.hcl", "reuse_envelopes out of range", hcl.DiagError, 3},
+
+		{"server_dns address must be a hostname", "testdata/bad-dns-ip-literal.hcl", "server_dns address must be a hostname", hcl.DiagError, 5},
+		{"server_dns resolve_interval out of range", "testdata/bad-dns-interval.hcl", "resolve_interval out of range", hcl.DiagError, 0},
+		{"server_dns duplicate name shares server namespace", "testdata/bad-dns-dup-name.hcl", "Duplicate server name", hcl.DiagError, 7},
 	}
 
 	for _, tc := range cases {

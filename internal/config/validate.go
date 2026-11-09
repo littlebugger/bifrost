@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -391,12 +392,39 @@ func (c *Config) validatePools() hcl.Diagnostics {
 			diags = append(diags, negativeMaxTxn(s.MaxTransactions, s.maxTxnRange, "server")...)
 			diags = append(diags, validateCheckContent(s.Check)...)
 		}
+
+		// server_dns templates share the server name namespace (members
+		// derived from a template will live there too, see
+		// docs/superpowers/specs/2026-11-09-dns-discovery-design.md) and
+		// carry the same per-field validation as a static server.
+		for _, t := range p.DNSTemplates {
+			if seenServer[t.Name] {
+				diags = append(diags, errDiag(t.rng, "Duplicate server name",
+					fmt.Sprintf("server %q is already defined in pool %q.", t.Name, p.Name)))
+			}
+			seenServer[t.Name] = true
+
+			if t.Weight < 0 || t.Weight > 256 {
+				weightRng := fallbackRange(t.weightRange, t.rng)
+				diags = append(diags, errDiag(weightRng, "Weight out of range", fmt.Sprintf("weight %d must be between 0 and 256.", t.Weight)))
+			}
+			diags = append(diags, negativeMaxTxn(t.MaxTransactions, t.maxTxnRange, "server")...)
+			diags = append(diags, validateCheckContent(t.Check)...)
+			diags = append(diags, validateServerDNSAddress(t)...)
+			diags = append(diags, validateServerDNSInterval(t)...)
+		}
 	}
 	return diags
 }
 
+// validatePoolShape rejects a pool with no member source at all (neither
+// static servers nor server_dns templates — a template-only pool is valid
+// even though it may resolve to zero members at runtime: see the design
+// doc's Config & validation section) and a pool whose every member source
+// is backup-only (a non-backup server OR template disqualifies the pool
+// from "all-backup", since either is a usable primary member source).
 func validatePoolShape(p Pool) hcl.Diagnostics {
-	if len(p.Servers) == 0 {
+	if len(p.Servers) == 0 && len(p.DNSTemplates) == 0 {
 		return hcl.Diagnostics{errDiag(p.rng, "Empty pool", fmt.Sprintf("pool %q has no servers.", p.Name))}
 	}
 	for _, s := range p.Servers {
@@ -404,7 +432,38 @@ func validatePoolShape(p Pool) hcl.Diagnostics {
 			return nil
 		}
 	}
+	for _, t := range p.DNSTemplates {
+		if !t.Backup {
+			return nil
+		}
+	}
 	return hcl.Diagnostics{errDiag(p.rng, "All-backup pool", fmt.Sprintf("pool %q has no primary (non-backup) server.", p.Name))}
+}
+
+// validateServerDNSAddress rejects a server_dns address whose host is an IP
+// literal: the whole point of the block is a hostname DNS can expand into N
+// members, so a fixed IP belongs on a plain server block instead.
+func validateServerDNSAddress(t ServerDNS) hcl.Diagnostics {
+	host, _, err := net.SplitHostPort(t.Address)
+	if err != nil {
+		return nil
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return hcl.Diagnostics{errDiag(t.rng, "server_dns address must be a hostname",
+			fmt.Sprintf("server_dns %q address %q has an IP-literal host; use a plain server block for a fixed IP destination.", t.Name, t.Address))}
+	}
+	return nil
+}
+
+// validateServerDNSInterval enforces resolve_interval's 1s floor (the
+// design's own minimum — anything faster is DNS-query spam, not a
+// meaningful freshness gain).
+func validateServerDNSInterval(t ServerDNS) hcl.Diagnostics {
+	if t.ResolveInterval < time.Second {
+		return hcl.Diagnostics{errDiag(fallbackRange(t.resolveIntervalRange, t.rng), "resolve_interval out of range",
+			fmt.Sprintf("resolve_interval %s must be at least 1s.", t.ResolveInterval))}
+	}
+	return nil
 }
 
 func validatePoolBackendTLS(p Pool) hcl.Diagnostics {

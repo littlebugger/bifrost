@@ -149,23 +149,43 @@ type rawServer struct {
 	Check                *rawCheck `hcl:"check,block"`
 }
 
+// rawServerDNS mirrors rawServer: a server_dns template expands at
+// runtime into per-IP members (see docs/superpowers/specs/2026-11-09-dns-
+// discovery-design.md), so it carries the same resolution-eligible fields
+// (weight/backup/max_transactions/check) plus its own resolve_interval.
+type rawServerDNS struct {
+	Name  string    `hcl:",label"`
+	Range hcl.Range `hcl:",def_range"`
+
+	Address              string    `hcl:"address"`
+	ResolveInterval      string    `hcl:"resolve_interval,optional"`
+	ResolveIntervalRange hcl.Range `hcl:"resolve_interval,attr_range"`
+	Weight               *int      `hcl:"weight"`
+	WeightRange          hcl.Range `hcl:"weight,attr_range"`
+	Backup               bool      `hcl:"backup,optional"`
+	MaxTransactions      *int      `hcl:"max_transactions"`
+	MaxTransactionsRange hcl.Range `hcl:"max_transactions,attr_range"`
+	Check                *rawCheck `hcl:"check,block"`
+}
+
 type rawPool struct {
 	Name  string    `hcl:",label"`
 	Range hcl.Range `hcl:",def_range"`
 
-	Balance              string       `hcl:"balance"`
-	BackendTLS           string       `hcl:"backend_tls,optional"`
-	BackendTLSServerName string       `hcl:"backend_tls_server_name,optional"`
-	BackendTLSCA         string       `hcl:"backend_tls_ca,optional"`
-	BackendTLSCARange    hcl.Range    `hcl:"backend_tls_ca,attr_range"`
-	EhloName             string       `hcl:"ehlo_name,optional"`
-	MaxTransactions      *int         `hcl:"max_transactions"`
-	MaxTransactionsRange hcl.Range    `hcl:"max_transactions,attr_range"`
-	ReuseEnvelopes       *int         `hcl:"reuse_envelopes,optional"`
-	ReuseEnvelopesRange  hcl.Range    `hcl:"reuse_envelopes,attr_range"`
-	Check                *rawCheck    `hcl:"check,block"`
-	Servers              []rawServer  `hcl:"server,block"`
-	Auth                 *rawPoolAuth `hcl:"auth,block"`
+	Balance              string         `hcl:"balance"`
+	BackendTLS           string         `hcl:"backend_tls,optional"`
+	BackendTLSServerName string         `hcl:"backend_tls_server_name,optional"`
+	BackendTLSCA         string         `hcl:"backend_tls_ca,optional"`
+	BackendTLSCARange    hcl.Range      `hcl:"backend_tls_ca,attr_range"`
+	EhloName             string         `hcl:"ehlo_name,optional"`
+	MaxTransactions      *int           `hcl:"max_transactions"`
+	MaxTransactionsRange hcl.Range      `hcl:"max_transactions,attr_range"`
+	ReuseEnvelopes       *int           `hcl:"reuse_envelopes,optional"`
+	ReuseEnvelopesRange  hcl.Range      `hcl:"reuse_envelopes,attr_range"`
+	Check                *rawCheck      `hcl:"check,block"`
+	Servers              []rawServer    `hcl:"server,block"`
+	DNSTemplates         []rawServerDNS `hcl:"server_dns,block"`
+	Auth                 *rawPoolAuth   `hcl:"auth,block"`
 }
 
 type rawRule struct {

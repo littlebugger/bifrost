@@ -40,6 +40,10 @@ const (
 	builtinMaxTransactions = 0
 	builtinWeight          = 1
 	builtinGlobalMaxConn   = 1024
+
+	// builtinResolveInterval is server_dns's default poll period when
+	// resolve_interval is omitted (PROJECT.md / the DNS discovery design).
+	builtinResolveInterval = 30 * time.Second
 )
 
 // resolveInheritance fills every inheritance-eligible field of cfg,
@@ -117,6 +121,33 @@ func resolveInheritance(cfg *Config, raw *rawFile) {
 
 			serverChain := []*rawCheck{rs.Check, rp.Check, defaultsCheck}
 			server.Check = resolveCheck(serverChain, pool.BackendTLS, pool.EhloName, server.rng)
+		}
+
+		for ti := range pool.DNSTemplates {
+			rt := &rp.DNSTemplates[ti]
+			tmpl := &pool.DNSTemplates[ti]
+
+			if rt.ResolveInterval == "" {
+				tmpl.ResolveInterval = builtinResolveInterval
+				tmpl.resolveIntervalRange = tmpl.rng
+			}
+
+			if rt.Weight != nil {
+				tmpl.Weight = *rt.Weight
+				tmpl.weightRange = rt.WeightRange
+			} else {
+				tmpl.Weight = builtinWeight
+				tmpl.weightRange = tmpl.rng
+			}
+			if rt.MaxTransactions != nil {
+				tmpl.MaxTransactions = *rt.MaxTransactions
+				tmpl.maxTxnRange = rt.MaxTransactionsRange
+			} else {
+				tmpl.MaxTransactions = pool.MaxTransactions
+			}
+
+			templateChain := []*rawCheck{rt.Check, rp.Check, defaultsCheck}
+			tmpl.Check = resolveCheck(templateChain, pool.BackendTLS, pool.EhloName, tmpl.rng)
 		}
 	}
 }
