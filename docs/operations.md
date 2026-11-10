@@ -421,6 +421,8 @@ file is a load error, so `-c` catches it before a restart does.
 
 ## SMTP AUTH
 
+Working example: `examples/auth.hcl`.
+
 Bifrost terminates SMTP AUTH PLAIN locally on each leg, independently:
 the client authenticates *to bifrost*, and — completely separately —
 bifrost authenticates *to each backend* with that pool's own
@@ -604,6 +606,8 @@ capability drift already gets.
 
 ## Backend connection reuse
 
+Working example: `examples/reuse.hcl`.
+
 By default (`reuse_envelopes` omitted, `0`, or `1`) every envelope gets
 its own backend connection, dialed and handshaked fresh, then politely
 `QUIT`'d — PROJECT.md's D4. A pool can opt into session-affine reuse
@@ -676,6 +680,8 @@ failover above, plus `TestReuseEnvelopesOmittedDialsFreshPerEnvelope`,
 which pins today's default behavior unchanged).
 
 ## DNS-discovered pool members
+
+Working example: `examples/dns-discovery.hcl`.
 
 A `server_dns` block is a server *template*: one DNS name whose answer
 stands in for N pool members, instead of N hand-written `server` blocks.
