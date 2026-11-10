@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -286,6 +287,136 @@ func TestOneListenerStoppingUnexpectedlyFailsProcess(t *testing.T) {
 	}
 
 	waitConnClosed(t, connB, 10*time.Second)
+}
+
+// oneListenerStartTLSFixture is a single STARTTLS listener, labeled with
+// name (empty means unlabeled, which config.Load defaults to "default"),
+// at certPath/keyPath -- the final-review item 2 fixture: a reload can
+// rename this listener without rebinding or re-pointing its certificate.
+func oneListenerStartTLSFixture(name, smtpAddr, adminAddr, certPath, keyPath string) string {
+	label := ""
+	if name != "" {
+		label = fmt.Sprintf("%q ", name)
+	}
+	return fmt.Sprintf(`
+listener %s{
+  bind     = %q
+  hostname = "bifrost.test"
+
+  starttls {
+    cert = %q
+    key  = %q
+  }
+}
+
+pool "p" {
+  balance = "roundrobin"
+  server "mta1" { address = "192.0.2.1:25" }
+}
+
+routing {
+  default_pool = "p"
+}
+
+admin {
+  bind = %q
+}
+`, label, smtpAddr, certPath, keyPath, adminAddr)
+}
+
+// TestReloadRenamedListenerKeepsSTARTTLS is the final-review fix for item
+// 2: wire.go's currentCert looks up a listener's certificate by name in
+// the LIVE holder, but the GetCertificate closure built for the socket is
+// bound to the name that listener had at startup (wire.go's listen/
+// listenerTLS never rebuild it on reload). Renaming the listener here
+// makes listenerNamed(newCfg, "default") return nil, which must self-heal
+// to the cached certificate (with a one-time warning) instead of failing
+// every handshake on the still-open socket while plaintext keeps working.
+func TestReloadRenamedListenerKeepsSTARTTLS(t *testing.T) {
+	certPath, err := filepath.Abs("../../examples/server.crt")
+	if err != nil {
+		t.Fatalf("abs cert path: %v", err)
+	}
+	keyPath, err := filepath.Abs("../../examples/server.key")
+	if err != nil {
+		t.Fatalf("abs key path: %v", err)
+	}
+
+	smtpAddr, adminAddr := freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	if err := os.WriteFile(path, []byte(oneListenerStartTLSFixture("", smtpAddr, adminAddr, certPath, keyPath)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-f", path}, io.Discard, &stderr) }()
+
+	var stopped atomic.Bool
+	t.Cleanup(func() {
+		if stopped.Load() {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("serve did not exit during cleanup; logs:\n%s", stderr.String())
+		}
+	})
+
+	waitForStatus(t, "http://"+adminAddr+"/healthz", http.StatusOK)
+
+	clientTLS := &tls.Config{InsecureSkipVerify: true}
+
+	// Sanity: STARTTLS works under the listener's original name "default",
+	// before any reload.
+	before := smtpdrv.Dial(t, smtpAddr)
+	before.Expect("220")
+	before.Send("EHLO client.example")
+	before.Expect("250")
+	before.StartTLS(clientTLS)
+	before.Send("QUIT")
+	before.Expect("221")
+
+	// Rename the listener and reload: BindChange only rejects an edited
+	// bind, never a rename (a rename is "removed" + "added", each its own
+	// RestartRequired warning, not a rejection).
+	if err := os.WriteFile(path, []byte(oneListenerStartTLSFixture("renamed", smtpAddr, adminAddr, certPath, keyPath)), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+	reloadsBefore := strings.Count(stderr.String(), "config reloaded")
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatalf("SIGHUP: %v", err)
+	}
+	waitForLogCount(t, &stderr, "config reloaded", reloadsBefore+1)
+
+	// The still-open socket must keep answering STARTTLS under its stale
+	// name, not fail every handshake while plaintext keeps working.
+	after := smtpdrv.Dial(t, smtpAddr)
+	after.Expect("220")
+	after.Send("EHLO client.example")
+	after.Expect("250")
+	after.StartTLS(clientTLS)
+	after.Send("QUIT")
+	after.Expect("221")
+
+	if logs := stderr.String(); !strings.Contains(logs, "still-open socket keeps serving the stale certificate") {
+		t.Errorf("logs = %s, want the one-time stale-certificate warning", logs)
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	select {
+	case code := <-done:
+		stopped.Store(true)
+		if code != 0 {
+			t.Errorf("run() exit code = %d, want 0; logs:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
+	}
 }
 
 // waitConnClosed bounded-polls conn until a read fails (EOF or otherwise)

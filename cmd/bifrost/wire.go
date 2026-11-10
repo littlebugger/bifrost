@@ -85,10 +85,13 @@ type namedListener struct {
 }
 
 // certEntry is one listener's cached certificate, tagged with the config
-// generation it was parsed from.
+// generation it was parsed from, plus whether currentCert has already
+// logged the one-time warning for that listener having disappeared from
+// the live config (renamed or removed) while its socket stays open.
 type certEntry struct {
-	cert *tls.Certificate
-	gen  *config.Config
+	cert        *tls.Certificate
+	gen         *config.Config
+	warnedStale bool
 }
 
 // newApp builds every component and opens both listeners, so a bind
@@ -247,6 +250,17 @@ func (a *app) currentCert(name string) (*tls.Certificate, error) {
 	cfg := a.holder.Load()
 	lst := listenerNamed(cfg, name)
 	if lst == nil || lst.StartTLS == nil {
+		// A reload can rename or remove a listener out from under a socket
+		// that is still open (and whose GetCertificate closure is still
+		// bound to its old name): docs promise that socket "keeps serving
+		// under the stale name", so a cached cert from before the rename
+		// is handed back here rather than failing every handshake while
+		// plaintext traffic on the same socket keeps working.
+		if lst == nil {
+			if crt, ok := a.staleCert(name); ok {
+				return crt, nil
+			}
+		}
 		return nil, fmt.Errorf("no certificate configured for listener %q", name)
 	}
 
@@ -274,6 +288,26 @@ func (a *app) currentCert(name string) (*tls.Certificate, error) {
 	a.certCache[name] = certEntry{cert: &crt, gen: cfg}
 	a.lg.Info("listener certificate loaded", "listener", name, "cert", lst.StartTLS.Cert)
 	return &crt, nil
+}
+
+// staleCert returns the certificate already cached for a listener name no
+// longer present in the live config (currentCert's lst == nil case), so a
+// rename or removal never breaks STARTTLS on that listener's still-open
+// socket. The warning fires once per name, not once per handshake:
+// certEntry.warnedStale is flipped under the same lock that reads it.
+func (a *app) staleCert(name string) (*tls.Certificate, bool) {
+	a.certMu.Lock()
+	defer a.certMu.Unlock()
+	entry, ok := a.certCache[name]
+	if !ok {
+		return nil, false
+	}
+	if !entry.warnedStale {
+		entry.warnedStale = true
+		a.certCache[name] = entry
+		a.lg.Warn("listener renamed or removed from the live config; its still-open socket keeps serving the stale certificate", "listener", name)
+	}
+	return entry.cert, true
 }
 
 // hasDNSTemplates reports whether any pool in cfg declares a server_dns
