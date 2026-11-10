@@ -44,11 +44,11 @@ func (c *Config) PrimaryListener() *Listener // &c.Listeners[0]
 // only here; matching is Task 2).
 ```
 
-- [ ] **Step 1: Failing tests** — `multi-listener.hcl`: two labeled listeners (different binds/hostnames/caps; one with auth+starttls, one without), a rule with `listener = ["bulk"]`; assert `len(cfg.Listeners)==2`, names, per-listener fields, `cfg.Routing.Rules[0].Listener`. Compat: existing fixtures (auth.hcl etc.) assert `PrimaryListener().Name == "default"`. Validation rows: dup names → `"duplicate listener name"`; dup binds → `"duplicate listener bind"`; two unlabeled blocks → `"listener blocks require labels"`; rule referencing unknown listener → `"routing rule references unknown listener"`.
-- [ ] **Step 2: Verify RED** — `go test ./internal/config/ -run 'TestLoad|TestValidate' -v` (label decode fails first: rawListener needs an optional label — gohcl requires a label field for labeled blocks; decode BOTH shapes by trying labeled schema first, falling back — read how hclsimple handles optional labels; if HCL cannot express optional labels on one block type, decode the label via the block header ranges the way rawschema captures `attr_range`s, and note the chosen mechanism in the task report).
-- [ ] **Step 3: Implement** — resolved model + the mechanical consumer swap (`cfg.Listener.X` → `cfg.PrimaryListener().X`); validateListenerCount becomes the new rules (≥1 block always required); per-listener application of the existing listener-scoped validations (capabilities, starttls/auth pairing, SMTPUTF8, hostname control chars) — loop them, keep messages identical so existing validate_test rows pass unchanged.
-- [ ] **Step 4: GREEN** — `go test ./internal/config/ -v`, then compile-wide `go build ./...` and `go test ./internal/... ./cmd/...` (consumer swap must not change behavior anywhere).
-- [ ] **Step 5: Commit** — `git commit -am "feat: resolve multiple named listeners in config"`
+- [x] **Step 1: Failing tests** — `multi-listener.hcl`: two labeled listeners (different binds/hostnames/caps; one with auth+starttls, one without), a rule with `listener = ["bulk"]`; assert `len(cfg.Listeners)==2`, names, per-listener fields, `cfg.Routing.Rules[0].Listener`. Compat: existing fixtures (auth.hcl etc.) assert `PrimaryListener().Name == "default"`. Validation rows: dup names → `"duplicate listener name"`; dup binds → `"duplicate listener bind"`; two unlabeled blocks → `"listener blocks require labels"`; rule referencing unknown listener → `"routing rule references unknown listener"`.
+- [x] **Step 2: Verify RED** — `go test ./internal/config/ -run 'TestLoad|TestValidate' -v` (label decode fails first: rawListener needs an optional label — gohcl requires a label field for labeled blocks; decode BOTH shapes by trying labeled schema first, falling back — read how hclsimple handles optional labels; if HCL cannot express optional labels on one block type, decode the label via the block header ranges the way rawschema captures `attr_range`s, and note the chosen mechanism in the task report).
+- [x] **Step 3: Implement** — resolved model + the mechanical consumer swap (`cfg.Listener.X` → `cfg.PrimaryListener().X`); validateListenerCount becomes the new rules (≥1 block always required); per-listener application of the existing listener-scoped validations (capabilities, starttls/auth pairing, SMTPUTF8, hostname control chars) — loop them, keep messages identical so existing validate_test rows pass unchanged.
+- [x] **Step 4: GREEN** — `go test ./internal/config/ -v`, then compile-wide `go build ./...` and `go test ./internal/... ./cmd/...` (consumer swap must not change behavior anywhere).
+- [x] **Step 5: Commit** — `git commit -am "feat: resolve multiple named listeners in config"`
 
 ### Task 2: Routing by listener
 
@@ -66,11 +66,11 @@ if len(rule.Listener) > 0 && !slices.Contains(rule.Listener, tx.Listener) {
 }
 ```
 
-- [ ] **Step 1: Failing tests** — rules_test rows: listener-only rule matches/skips by name; listener+CIDR AND-combined; empty listener key matches any; first-match ordering with listener rules.
-- [ ] **Step 2: RED** — `go test ./internal/balance/ -run TestMatchPool -v`.
-- [ ] **Step 3: Implement** (the clause above, mirroring the two existing key checks at rules.go:28-33).
-- [ ] **Step 4: GREEN** — `go test ./internal/balance/ ./internal/proxy/ -v`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: route transactions by arrival listener"`
+- [x] **Step 1: Failing tests** — rules_test rows: listener-only rule matches/skips by name; listener+CIDR AND-combined; empty listener key matches any; first-match ordering with listener rules.
+- [x] **Step 2: RED** — `go test ./internal/balance/ -run TestMatchPool -v`.
+- [x] **Step 3: Implement** (the clause above, mirroring the two existing key checks at rules.go:28-33).
+- [x] **Step 4: GREEN** — `go test ./internal/balance/ ./internal/proxy/ -v`.
+- [x] **Step 5: Commit** — `git commit -am "feat: route transactions by arrival listener"`
 
 ### Task 3: Serve/Session/Txn threading + N accept loops
 
@@ -98,11 +98,11 @@ func Serve(ctx context.Context, ln net.Listener, cfg *config.Config,
 // (WaitGroup + one closer goroutine); drain closes every ln.
 ```
 
-- [ ] **Step 1: Failing tests** — proxy: a Session built on listener A uses A's hostname/caps/auth while B differs (two-listener config; drive two sessions; assert banners, EHLO sets, and that a user valid on A gets 535 on B); relay test asserting txn log carries `listener=` and that RequiredCaps enforcement is per-listener (fake missing a cap only listener B advertises: txn from A relays, txn from B gets the no-backend synth). cmd: main_test boots two listeners on :0 and SMTPs both ports.
-- [ ] **Step 2: RED** — `go test ./internal/proxy/ -run 'TestListener|TestSession' -v`.
-- [ ] **Step 3: Implement.** Session threading first (compile ripples through NewSession call sites incl. tests — update them mechanically); then cmd wiring: wire.go builds per-listener `net.Listener` + per-listener TLS cert load (today's single-cert load loops); drain.go closes all; the "bifrost listening" log prints each name=bind pair.
-- [ ] **Step 4: GREEN** — `go test ./internal/proxy/ ./cmd/... -v` and `go test ./...` (integration-untagged).
-- [ ] **Step 5: Commit** — `git commit -am "feat: serve sessions per named listener"`
+- [x] **Step 1: Failing tests** — proxy: a Session built on listener A uses A's hostname/caps/auth while B differs (two-listener config; drive two sessions; assert banners, EHLO sets, and that a user valid on A gets 535 on B); relay test asserting txn log carries `listener=` and that RequiredCaps enforcement is per-listener (fake missing a cap only listener B advertises: txn from A relays, txn from B gets the no-backend synth). cmd: main_test boots two listeners on :0 and SMTPs both ports.
+- [x] **Step 2: RED** — `go test ./internal/proxy/ -run 'TestListener|TestSession' -v`.
+- [x] **Step 3: Implement.** Session threading first (compile ripples through NewSession call sites incl. tests — update them mechanically); then cmd wiring: wire.go builds per-listener `net.Listener` + per-listener TLS cert load (today's single-cert load loops); drain.go closes all; the "bifrost listening" log prints each name=bind pair.
+- [x] **Step 4: GREEN** — `go test ./internal/proxy/ ./cmd/... -v` and `go test ./...` (integration-untagged).
+- [x] **Step 5: Commit** — `git commit -am "feat: serve sessions per named listener"`
 
 ### Task 4: Prober capability union
 
