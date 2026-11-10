@@ -25,14 +25,17 @@ make build   # -> ./bin/bifrost
 ## Configuration
 
 Bifrost reads one HCL file. The minimal shape — one listener, one pool,
-one routing default:
+one routing default (this is `examples/minimal.hcl`, validated by the
+test suite):
 
 ```hcl
 listener {
-  bind = "0.0.0.0:25"
+  bind     = "0.0.0.0:25"
+  hostname = "mail.example.com"
 }
 
 pool "backend" {
+  balance = "roundrobin"
   server "mta1" { address = "192.0.2.11:25" }
 }
 

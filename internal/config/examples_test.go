@@ -15,8 +15,8 @@ func TestExamplesLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob examples/*.hcl: %s", err)
 	}
-	if len(files) < 5 {
-		t.Fatalf("found %d examples/*.hcl files, want at least 5 (bifrost.hcl + one per feature): %v", len(files), files)
+	if len(files) < 6 {
+		t.Fatalf("found %d examples/*.hcl files, want at least 6 (bifrost.hcl + minimal.hcl + one per feature): %v", len(files), files)
 	}
 
 	for _, path := range files {
