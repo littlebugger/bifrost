@@ -164,9 +164,9 @@ func (c *Config) UnionCapabilities() []string
 **Files:**
 - Modify: `PROJECT.md` (R1 note, capability policy's "single referent" paragraph → per-txn/union model, decision table v1-single-listener row), `docs/operations.md` (multi-listener section + routing key + reload caveats), `examples/bifrost.hcl` (stays single-listener as the fixture; commented second-listener sketch)
 
-- [ ] **Step 1–3: Edit the three docs**; verify `go test ./internal/config/ -v` (example fixture) stays green.
-- [ ] **Step 4: Gates** — `go test ./...`; `gofumpt -l internal cmd test` empty.
-- [ ] **Step 5: Commit** — `git commit -am "docs: multiple listeners"`
+- [x] **Step 1–3: Edit the three docs**; verify `go test ./internal/config/ -v` (example fixture) stays green.
+- [x] **Step 4: Gates** — `go test ./...`; `gofumpt -l internal cmd test` empty.
+- [x] **Step 5: Commit** — `git commit -am "docs: multiple listeners"`
 
 ### Task 9: Feature config examples (user request 2026-11-10)
 
