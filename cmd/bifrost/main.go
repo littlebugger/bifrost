@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -101,13 +102,21 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 		}()
 	}
 
-	// proxy.Serve owns the session WaitGroup, so its return is the
-	// process's "nothing is in flight any more" signal — the one the drain
-	// sequence waits on.
-	start("smtp listener", func() error {
-		defer close(serveDone)
-		return proxy.Serve(sessionCtx, a.smtpLn, cfg, a.tlsCfg, a.relay, lg, a.metrics)
-	})
+	// Each listener's proxy.Serve owns its own session WaitGroup, so its
+	// return means nothing is in flight on that listener any more.
+	// serveDone — the signal the drain sequence waits on — only closes
+	// once ALL of them have returned, via the smtpWG + closer goroutine
+	// below, not the first one back.
+	var smtpWG sync.WaitGroup
+	for _, nl := range a.smtpLns {
+		smtpWG.Add(1)
+		start("smtp listener "+nl.name, func() error {
+			defer smtpWG.Done()
+			return proxy.Serve(sessionCtx, nl.ln, cfg, nl.lst, nl.tlsCfg, a.relay, lg, a.metrics)
+		})
+	}
+	go func() { smtpWG.Wait(); close(serveDone) }()
+
 	start("health checker", func() error { a.checker.Run(rootCtx); return nil })
 	if a.runner != nil {
 		start("dns discovery", func() error { a.runner.Run(rootCtx); return nil })
@@ -116,7 +125,11 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 		start("admin api", func() error { return a.admin.Serve(rootCtx, a.adminLn) })
 	}
 
-	lg.Info("bifrost listening", "version", version, "smtp", a.smtpLn.Addr().String(),
+	binds := make([]string, len(a.smtpLns))
+	for i, nl := range a.smtpLns {
+		binds[i] = nl.name + "=" + nl.ln.Addr().String()
+	}
+	lg.Info("bifrost listening", "version", version, "smtp", strings.Join(binds, ","),
 		"admin", a.adminAddr(), "config", cfgPath)
 
 	sigc := make(chan os.Signal, 4)

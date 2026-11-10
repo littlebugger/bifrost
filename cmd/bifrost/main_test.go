@@ -16,7 +16,19 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/littlebugger/bifrost/internal/smtpdrv"
 )
+
+// requireContains fails t unless reply's joined lines contain want — the
+// per-listener hostname check TestTwoListenersServeIndependently uses on
+// both the banner and the EHLO reply.
+func requireContains(t *testing.T, reply smtpdrv.Reply, want string) {
+	t.Helper()
+	if !strings.Contains(strings.Join(reply.Lines, "\n"), want) {
+		t.Errorf("reply = %v, want it to contain %q", reply.Lines, want)
+	}
+}
 
 func TestCheckModeOK(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -130,6 +142,92 @@ func TestServeDNSDiscoveryListsMembersAcrossReload(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
 	}
+}
+
+// TestTwoListenersServeIndependently is Task 3's cmd/bifrost proof: a real
+// process, booted from a config with two labeled listener blocks, accepts
+// and serves sessions on both ports at once — not just that wire.go builds
+// two sockets, but that main.go's N accept loops actually run them. Each
+// listener's own hostname shows up in its own banner/EHLO, proving the two
+// aren't secretly sharing one Session path.
+func TestTwoListenersServeIndependently(t *testing.T) {
+	addrA, addrB, adminAddr := freePort(t), freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	if err := os.WriteFile(path, []byte(twoListenerFixture(addrA, addrB, adminAddr)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-f", path}, io.Discard, &stderr) }()
+
+	var stopped atomic.Bool
+	t.Cleanup(func() {
+		if stopped.Load() {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("serve did not exit during cleanup; logs:\n%s", stderr.String())
+		}
+	})
+
+	waitForStatus(t, "http://"+adminAddr+"/healthz", http.StatusOK)
+
+	a := smtpdrv.Dial(t, addrA)
+	requireContains(t, a.Expect("220"), "a.bifrost.test")
+	a.Send("EHLO client.example")
+	requireContains(t, a.Expect("250"), "a.bifrost.test")
+
+	b := smtpdrv.Dial(t, addrB)
+	requireContains(t, b.Expect("220"), "b.bifrost.test")
+	b.Send("EHLO client.example")
+	requireContains(t, b.Expect("250"), "b.bifrost.test")
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	select {
+	case code := <-done:
+		stopped.Store(true)
+		if code != 0 {
+			t.Errorf("run() exit code = %d, want 0; logs:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
+	}
+}
+
+// twoListenerFixture is two labeled listeners ("a", "b"), each with its own
+// hostname, sharing one pool and routing — the smallest config that makes
+// main.go actually run two accept loops.
+func twoListenerFixture(addrA, addrB, adminAddr string) string {
+	return fmt.Sprintf(`
+listener "a" {
+  bind     = %q
+  hostname = "a.bifrost.test"
+}
+
+listener "b" {
+  bind     = %q
+  hostname = "b.bifrost.test"
+}
+
+pool "p" {
+  balance = "roundrobin"
+  server "mta1" { address = "192.0.2.1:25" }
+}
+
+routing {
+  default_pool = "p"
+}
+
+admin {
+  bind = %q
+}
+`, addrA, addrB, adminAddr)
 }
 
 // dnsDiscoveryFixture is the smallest config carrying one server_dns

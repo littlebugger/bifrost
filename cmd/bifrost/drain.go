@@ -50,8 +50,10 @@ func (a *app) drain(cancelSessions func(), serveDone <-chan struct{}) {
 	if t.LameDuck > 0 {
 		time.Sleep(t.LameDuck)
 	}
-	if err := a.smtpLn.Close(); err != nil {
-		a.lg.Warn("closing the smtp listener", "error", err)
+	for _, nl := range a.smtpLns {
+		if err := nl.ln.Close(); err != nil {
+			a.lg.Warn("closing the smtp listener", "listener", nl.name, "error", err)
+		}
 	}
 	cancelSessions()
 

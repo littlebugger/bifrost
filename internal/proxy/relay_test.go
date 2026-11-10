@@ -3,6 +3,8 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -273,6 +275,43 @@ func newRelayClientPickMetrics(t *testing.T, cfg *config.Config, lg *slog.Logger
 	f.send("EHLO client.example")
 	f.reply()
 	return f
+}
+
+// newRelayClientListener is newRelayClientLog bound to an explicit
+// listener instead of cfg.PrimaryListener(): the per-listener
+// RequiredCaps test's own fixture, since every step of the chain above
+// defaults to the primary one.
+func newRelayClientListener(t *testing.T, cfg *config.Config, lst *config.Listener, lg *slog.Logger) *relayFixture {
+	t.Helper()
+	h := &config.Holder{}
+	h.Swap(cfg)
+	sig := &stubSignals{}
+	leases := &leaseCounter{}
+	picks := &pickStub{servers: serversOf(cfg)}
+	r := NewRelay(picks.pick, h, lg, sig, leases.lease)
+	c := newTestClientListener(t, cfg, lst, nil, r)
+	f := &relayFixture{testClient: c, sig: sig, leases: leases, picks: picks}
+	f.expect("220 " + lst.Hostname + " ESMTP")
+	f.send("EHLO client.example")
+	f.reply()
+	return f
+}
+
+// lastLogLine decodes buf's final JSON log record — HandleTransaction's
+// own emitLog is always the last line written for a transaction
+// (HandleTransaction's defers run after any mid-walk Warn, such as a
+// dial attempt's "backend attach failed"), so this is the txnlog.go
+// record regardless of how many other lines a failed attach logged
+// ahead of it.
+func lastLogLine(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	var fields map[string]any
+	last := lines[len(lines)-1]
+	if err := json.Unmarshal([]byte(last), &fields); err != nil {
+		t.Fatalf("log line is not valid JSON: %v (line: %s)", err, last)
+	}
+	return fields
 }
 
 // backendLines returns every raw line the fake's sessionIdx-th session
@@ -765,5 +804,52 @@ func TestReuseLeaseDenialRetainsCache(t *testing.T) {
 	}
 	if got := m.count("reused"); got != 1 {
 		t.Errorf(`BackendReuse("reused") = %d, want 1: only envelope 3 actually reused the cache`, got)
+	}
+}
+
+// listenerCapsConfig is relayConfig's single-server pool wired to two
+// listeners that share one hostname but advertise different capability
+// sets: A's matches the fake backend's exactly (backendCaps()); B's adds
+// one capability the backend does not have, so a dial through B is
+// incompatible. Both route through the same pool — only which listener a
+// session is told it arrived on varies.
+func listenerCapsConfig(addr string) *config.Config {
+	cfg := relayConfig(addr)
+	cfg.Listeners = []config.Listener{
+		{Name: "a", Hostname: "bifrost.test", Capabilities: backendCaps()},
+		{Name: "b", Hostname: "bifrost.test", Capabilities: append(append([]string(nil), backendCaps()...), "DSN")},
+	}
+	return cfg
+}
+
+// TestPerListenerRequiredCaps proves dialOpts' RequiredCaps (attach.go)
+// is the arriving listener's own capability set, not some process-wide
+// default: the same pool and backend serve both listeners below, and
+// only the one asking for a capability the backend lacks fails to
+// attach. It also proves the txn log line names the listener the
+// transaction ran on (txnlog.go's "listener" field).
+func TestPerListenerRequiredCaps(t *testing.T) {
+	srv := relayFake(t, fakesmtp.Script{OnMAIL: []fakesmtp.Step{{Reply: "250 2.1.0 OK"}}})
+	cfg := listenerCapsConfig(srv.Addr())
+	lstA, lstB := &cfg.Listeners[0], &cfg.Listeners[1]
+
+	lgA, bufA := captureLog()
+	a := newRelayClientListener(t, cfg, lstA, lgA)
+	a.send("MAIL FROM:<a@b.example>")
+	a.expect("250 2.1.0 OK")
+	a.send("QUIT")
+	a.expect("221 2.0.0 Bye")
+	if got := lastLogLine(t, bufA)["listener"]; got != "a" {
+		t.Errorf(`log "listener" = %v, want "a"`, got)
+	}
+
+	lgB, bufB := captureLog()
+	b := newRelayClientListener(t, cfg, lstB, lgB)
+	b.send("MAIL FROM:<a@b.example>")
+	b.expect("451 4.4.1 No backend available, try again later")
+	b.send("QUIT")
+	b.expect("221 2.0.0 Bye")
+	if got := lastLogLine(t, bufB)["listener"]; got != "b" {
+		t.Errorf(`log "listener" = %v, want "b"`, got)
 	}
 }

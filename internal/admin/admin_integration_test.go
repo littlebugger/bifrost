@@ -70,7 +70,7 @@ func TestServersEndpointUnderTraffic(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan struct{})
 	go func() {
-		_ = proxy.Serve(ctx, ln, cfg, nil, relay, quiet, m)
+		_ = proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, relay, quiet, m)
 		close(serveDone)
 	}()
 	defer func() {

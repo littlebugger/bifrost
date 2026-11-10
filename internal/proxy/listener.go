@@ -31,8 +31,11 @@ const (
 
 // Serve runs the accept loop over ln until ctx is canceled or ln is
 // closed by anything else — both are a clean shutdown, never an error.
-// Every admitted connection becomes a Session; cfg, tlsCfg, h, and lg
-// are forwarded to NewSession unchanged, per connection.
+// Every admitted connection becomes a Session; cfg, lst, tlsCfg, h, and lg
+// are forwarded to NewSession unchanged, per connection. lst is the
+// config.Listener ln was bound from (cmd/bifrost runs one Serve per
+// configured listener); tlsCfg is that listener's client-leg certificate,
+// or nil when it has none.
 //
 // global_maxconn (cfg.Limits.GlobalMaxConn; 0 or less means unlimited)
 // is enforced here, before a Session exists at all: a connection over
@@ -45,7 +48,7 @@ const (
 // it starts and does not return until all of them have: epic 10's drain
 // cancels ctx and then waits on Serve's own return as the signal that
 // nothing is left in flight.
-func Serve(ctx context.Context, ln net.Listener, cfg *config.Config, tlsCfg *tls.Config, h TxnHandler, lg *slog.Logger, metrics ...Metrics) error {
+func Serve(ctx context.Context, ln net.Listener, cfg *config.Config, lst *config.Listener, tlsCfg *tls.Config, h TxnHandler, lg *slog.Logger, metrics ...Metrics) error {
 	if lg == nil {
 		lg = slog.Default()
 	}
@@ -114,7 +117,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg *config.Config, tlsCfg *tls
 			defer active.Add(-1)
 			m.SessionStarted()
 			defer m.SessionEnded()
-			s := NewSession(conn, cfg, tlsCfg, h, lg)
+			s := NewSession(conn, cfg, lst, tlsCfg, h, lg)
 			if err := s.Run(ctx); err != nil {
 				lg.Warn("session ended with error", "error", err)
 			}

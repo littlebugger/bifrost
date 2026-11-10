@@ -116,7 +116,7 @@ func serveTLS(t *testing.T, cfg *config.Config, tlsCfg *tls.Config, h proxy.TxnH
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s := proxy.NewSession(conn, cfg, tlsCfg, h, slog.New(slog.DiscardHandler))
+				s := proxy.NewSession(conn, cfg, cfg.PrimaryListener(), tlsCfg, h, slog.New(slog.DiscardHandler))
 				if err := s.Run(context.Background()); err != nil {
 					t.Errorf("session ended with %v, want nil", err)
 				}

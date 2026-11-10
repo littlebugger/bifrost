@@ -109,6 +109,7 @@ func (t *txn) emitLog() {
 	args := []any{
 		"client", t.tx.ClientIP.String(),
 		"helo", t.tx.Helo,
+		"listener", listenerName(t.tx.lst),
 		"authn", r.authn,
 		"pool", r.pool,
 		"server", r.server,

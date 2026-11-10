@@ -178,7 +178,9 @@ func TestChaosMaxconnExhaustion(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- proxy.Serve(ctx, ln, cfg, nil, relay, slog.New(slog.DiscardHandler)) }()
+	go func() {
+		serveDone <- proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, relay, slog.New(slog.DiscardHandler))
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {

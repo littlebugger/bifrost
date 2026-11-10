@@ -63,6 +63,17 @@ type TxnMeta struct {
 	Listener string
 }
 
+// listenerName is lst.Name, empty-safe: a hand-built Txn outside a real
+// session (tests) carries no listener at all, and both meta() (this
+// file's TxnMeta.Listener) and emitLog (txnlog.go's "listener" field) need
+// that to render as "" rather than panic.
+func listenerName(lst *config.Listener) string {
+	if lst == nil {
+		return ""
+	}
+	return lst.Name
+}
+
 // mailFromDomain extracts and lowercases the domain from a MAIL command
 // line: "MAIL FROM:<user@dom> params" → "dom". It returns "" for a null
 // sender (MAIL FROM:<>) or anything it cannot parse — Bifrost only

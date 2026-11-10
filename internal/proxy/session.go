@@ -103,6 +103,12 @@ type Txn struct {
 	// detachOrStash's stash path is simply never reached (no reuse pool
 	// configured).
 	affinity *backendAffinity
+
+	// lst is the listener the session arrived on (set in mail() from
+	// Session.lst): the routing/capability referent for this transaction
+	// (relay.go's meta(), attach.go's dialOpts). nil for a hand-built Txn
+	// outside a real session (tests).
+	lst *config.Listener
 }
 
 // leaveForSession hands one already-read command line back to the
@@ -155,6 +161,7 @@ func (t *Txn) setWriteDeadline(deadline time.Time) error {
 type Session struct {
 	conn   net.Conn
 	cfg    *config.Config
+	lst    *config.Listener
 	tlsCfg *tls.Config
 	h      TxnHandler
 	lg     *slog.Logger
@@ -184,12 +191,13 @@ type Session struct {
 	affinity backendAffinity
 }
 
-// NewSession wraps an accepted client connection. tlsCfg carries the
-// listener's certificate for the client-leg STARTTLS upgrade and is nil
-// when no certificate is configured, in which case STARTTLS is neither
-// advertised nor accepted; the caller loads it once at startup from
-// cfg.PrimaryListener().StartTLS rather than per connection.
-func NewSession(conn net.Conn, cfg *config.Config, tlsCfg *tls.Config, h TxnHandler, lg *slog.Logger) *Session {
+// NewSession wraps an accepted client connection. lst is the listener it
+// arrived on (the session's referent for hostname, capabilities, and AUTH —
+// see Session.lst). tlsCfg carries that listener's certificate for the
+// client-leg STARTTLS upgrade and is nil when no certificate is configured,
+// in which case STARTTLS is neither advertised nor accepted; the caller
+// loads it once at startup from lst.StartTLS rather than per connection.
+func NewSession(conn net.Conn, cfg *config.Config, lst *config.Listener, tlsCfg *tls.Config, h TxnHandler, lg *slog.Logger) *Session {
 	if lg == nil {
 		lg = slog.Default()
 	}
@@ -197,6 +205,7 @@ func NewSession(conn net.Conn, cfg *config.Config, tlsCfg *tls.Config, h TxnHand
 	return &Session{
 		conn:     conn,
 		cfg:      cfg,
+		lst:      lst,
 		tlsCfg:   tlsCfg,
 		h:        h,
 		lg:       lg,
@@ -350,7 +359,7 @@ func (s *Session) mail(ctx context.Context, raw []byte) (stop bool, err error) {
 	if !s.greeted {
 		return false, s.write(RplBadSequence)
 	}
-	if s.cfg.PrimaryListener().Auth != nil && !s.authed {
+	if s.lst.Auth != nil && !s.authed {
 		return false, s.write(RplAuthRequired)
 	}
 
@@ -371,6 +380,7 @@ func (s *Session) mail(ctx context.Context, raw []byte) (stop bool, err error) {
 		W:         s.bw,
 		conn:      s.conn,
 		affinity:  &s.affinity,
+		lst:       s.lst,
 	}
 	s.h.HandleTransaction(ctx, tx)
 	// The handler is expected to flush its own replies; flushing again
@@ -574,7 +584,7 @@ func (s *Session) reset() {
 // hostname is the name Bifrost answers with in the banner and EHLO
 // reply.
 func (s *Session) hostname() string {
-	if h := s.cfg.PrimaryListener().Hostname; h != "" {
+	if h := s.lst.Hostname; h != "" {
 		return h
 	}
 	return fallbackHostname
@@ -591,7 +601,7 @@ func (s *Session) tlsOffered() bool {
 // the operator did not configure), minus STARTTLS whenever an upgrade is
 // impossible (no certificate, or TLS already active per RFC 3207).
 func (s *Session) capabilities() []string {
-	caps := s.cfg.PrimaryListener().Capabilities
+	caps := s.lst.Capabilities
 	if s.tlsOffered() {
 		// allow_cleartext means "plaintext AUTH is acceptable on this
 		// listener" even when starttls is also configured — the 538 gate
@@ -600,7 +610,7 @@ func (s *Session) capabilities() []string {
 		// append onto a fresh backing array: caps aliases the shared
 		// config's slice, so appending in place would risk corrupting it
 		// across sessions.
-		if s.cfg.PrimaryListener().Auth != nil && s.cfg.PrimaryListener().Auth.AllowCleartext && !s.authed {
+		if s.lst.Auth != nil && s.lst.Auth.AllowCleartext && !s.authed {
 			return append(append([]string(nil), caps...), "AUTH PLAIN")
 		}
 		return caps
@@ -615,7 +625,7 @@ func (s *Session) capabilities() []string {
 	// Auth.AllowCleartext opts out for a network-layer-secured link — same
 	// condition as the tlsOffered() branch above, applied here once TLS is
 	// actually active, and only until the client has authenticated.
-	if s.cfg.PrimaryListener().Auth != nil && (s.tlsActive || s.cfg.PrimaryListener().Auth.AllowCleartext) && !s.authed {
+	if s.lst.Auth != nil && (s.tlsActive || s.lst.Auth.AllowCleartext) && !s.authed {
 		out = append(out, "AUTH PLAIN")
 	}
 	return out

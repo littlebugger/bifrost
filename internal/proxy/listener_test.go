@@ -54,7 +54,9 @@ func expectClosedConn(t *testing.T, br *bufio.Reader) {
 func runServe(t *testing.T, ctx context.Context, cancel context.CancelFunc, ln net.Listener, cfg *config.Config) {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, ln, cfg, nil, &stubHandler{}, slog.New(slog.DiscardHandler)) }()
+	go func() {
+		done <- Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, &stubHandler{}, slog.New(slog.DiscardHandler))
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -190,9 +192,12 @@ func TestServeStopsOnCtxCancel(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 
+	cfg := testConfig()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, ln, testConfig(), nil, &stubHandler{}, slog.New(slog.DiscardHandler)) }()
+	go func() {
+		done <- Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, &stubHandler{}, slog.New(slog.DiscardHandler))
+	}()
 
 	cancel()
 	select {

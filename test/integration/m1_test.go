@@ -63,7 +63,7 @@ func serve(t *testing.T, cfg *config.Config, h proxy.TxnHandler) string {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s := proxy.NewSession(conn, cfg, nil, h, slog.New(slog.DiscardHandler))
+				s := proxy.NewSession(conn, cfg, cfg.PrimaryListener(), nil, h, slog.New(slog.DiscardHandler))
 				if err := s.Run(context.Background()); err != nil {
 					t.Errorf("session ended with %v, want nil", err)
 				}

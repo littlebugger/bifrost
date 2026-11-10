@@ -87,7 +87,7 @@ func startStack(t *testing.T, cfg *config.Config, withHealth bool) *stack {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		serveErr <- proxy.Serve(ctx, ln, cfg, nil, s.relay, quiet)
+		serveErr <- proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, s.relay, quiet)
 	}()
 	t.Cleanup(func() {
 		cancel()

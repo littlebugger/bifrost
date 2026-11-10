@@ -53,13 +53,13 @@ func verifyPlain(users []config.AuthUser, authcid, password string) bool {
 // negotiated capabilities imply — unless the listener opted into
 // AllowCleartext for a link secured at the network layer instead.
 func (s *Session) auth(ctx context.Context, args []byte) (stop bool, err error) {
-	if s.cfg.PrimaryListener().Auth == nil {
+	if s.lst.Auth == nil {
 		return false, s.write(RplNotImplemented) // decision D6 unchanged when not configured
 	}
 	if !s.greeted || s.authed {
 		return false, s.write(RplBadSequence)
 	}
-	if !s.tlsActive && !s.cfg.PrimaryListener().Auth.AllowCleartext {
+	if !s.tlsActive && !s.lst.Auth.AllowCleartext {
 		return false, s.write(RplAuthEncryption) // strict: PLAIN never in cleartext
 	}
 
@@ -98,7 +98,7 @@ func (s *Session) auth(ctx context.Context, args []byte) (stop bool, err error) 
 	if !ok {
 		return false, s.write(RplAuthMalformed)
 	}
-	if !verifyPlain(s.cfg.PrimaryListener().Auth.Users, authcid, password) {
+	if !verifyPlain(s.lst.Auth.Users, authcid, password) {
 		s.authFails++
 		s.lg.Warn("client auth failed", "client", s.clientIP, "authcid", authcid)
 		if s.authFails >= 3 {
