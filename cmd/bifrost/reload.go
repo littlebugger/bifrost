@@ -79,6 +79,15 @@ func (a *app) applyReload() (diff string, discardedWeights, restartRequired, err
 		a.holder.Swap(newCfg)
 	}
 
+	// A listener a reload adds needs its sessions_active/_total series
+	// materialized exactly like one newApp.listen already registered at
+	// startup — otherwise it would scrape as missing until its own first
+	// session. Re-registering an existing listener is a harmless no-op
+	// (WithLabelValues on an already-materialized label just returns it).
+	for i := range newCfg.Listeners {
+		a.metrics.RegisterListener(newCfg.Listeners[i].Name)
+	}
+
 	// D15's survival matrix: admin state and force overrides are keyed by
 	// (pool, server) inside the health checker and survive the swap on
 	// their own; runtime weight overrides are deliberately discarded, and

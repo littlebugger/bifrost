@@ -362,10 +362,18 @@ func TestMetricsServed(t *testing.T) {
 	waitFor(t, func() bool { return checker.Status("p", "s1").LastProbe.Level != "" })
 	stop()
 
-	// A CounterVec/GaugeVec with zero labeled children is absent from a
-	// scrape even when correctly registered -- materialize one series on
-	// each of the push-based vecs the way internal/proxy really would.
-	s.m.SessionStarted("l1")
+	// bifrost_sessions_active/_total are registered per configured
+	// listener at startup (cmd/bifrost's newApp calls
+	// Metrics.RegisterListener), not only once a session actually opens
+	// -- a fresh, idle process must still scrape them at zero, or a
+	// "sessions_active == 0" alert would silently never fire. Proven
+	// directly, with no session event standing in for it.
+	s.m.RegisterListener("l1")
+
+	// A CounterVec/GaugeVec with zero labeled children is otherwise absent
+	// from a scrape even when correctly registered -- materialize one
+	// series on each of the remaining push-based vecs the way
+	// internal/proxy really would.
 	s.m.Transaction("l1", "p", "s1", "2xx")
 	s.m.SynthesizedReply("451 4.4.1")
 	s.m.RelayBytes("to_client", 1)
@@ -396,6 +404,18 @@ func TestMetricsServed(t *testing.T) {
 	for _, name := range want {
 		if !strings.Contains(body, name) {
 			t.Errorf("live /metrics scrape (curl http://<admin-bind>/metrics) missing %q", name)
+		}
+	}
+
+	// l1 never had a session (only RegisterListener touched it, above):
+	// the series must still read zero, not merely exist -- the exact
+	// "fresh idle process" shape item 3's fix restores.
+	for _, line := range []string{
+		`bifrost_sessions_active{listener="l1"} 0`,
+		`bifrost_sessions_total{listener="l1"} 0`,
+	} {
+		if !strings.Contains(body, line) {
+			t.Errorf("live /metrics scrape missing %q (session series must be present at zero before any session)", line)
 		}
 	}
 	if t.Failed() {

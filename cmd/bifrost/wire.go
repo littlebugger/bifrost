@@ -178,6 +178,7 @@ func (a *app) listen(cfg *config.Config) error {
 			}
 		}
 		a.smtpLns = append(a.smtpLns, namedListener{name: lst.Name, ln: ln, tlsCfg: tlsCfg, lst: lst})
+		a.metrics.RegisterListener(lst.Name)
 	}
 	return nil
 }

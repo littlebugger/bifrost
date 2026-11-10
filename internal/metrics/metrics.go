@@ -103,6 +103,20 @@ func New() *Metrics {
 	return m
 }
 
+// RegisterListener materializes bifrost_sessions_active/_total's
+// listener="name" series at zero. A Vec has no child series until
+// something increments it, so without this an idle fresh process scrapes
+// no sessions_active row at all for a listener that has never had a
+// session yet -- before these became Vecs it was a bare gauge, always
+// present at 0, so a "sessions_active == 0" alert on it would silently
+// stop firing. cmd/bifrost calls this once per configured listener at
+// startup, and again (harmlessly -- WithLabelValues is idempotent) for
+// every listener in a reloaded config.
+func (m *Metrics) RegisterListener(name string) {
+	m.sessionsActive.WithLabelValues(name)
+	m.sessionsTotal.WithLabelValues(name)
+}
+
 // SessionStarted implements proxy.Metrics.
 func (m *Metrics) SessionStarted(listener string) {
 	m.sessionsActive.WithLabelValues(listener).Inc()

@@ -762,10 +762,16 @@ reload-live exactly as before; nothing above changes that.
 "Transaction log" below. `bifrost_transactions_total` and the session
 metrics (`bifrost_sessions_active`, `bifrost_sessions_total`) gain a
 `listener` label; no new metric families were added — see "Metrics
-reference" below. `GET /stats` gains a `listeners` array, one row per
-configured listener, each with its own `sessions_active`/`sessions_total`
-— see "`GET /stats`" above. `GET /servers` is unchanged: servers are
-pool-scoped, not listener-scoped.
+reference" below. For a single, unlabeled `listener` block this label is
+simply `listener="default"` — the one visible `/metrics` change for a
+config that predates this feature. Every configured listener's
+`sessions_active`/`sessions_total` series is registered at zero at
+startup (and again for one a reload adds), not only once it has actually
+carried a session, so an idle fresh process still scrapes all sixteen
+documented metric names — see "Metrics reference" below. `GET /stats`
+gains a `listeners` array, one row per configured listener, each with its
+own `sessions_active`/`sessions_total` — see "`GET /stats`" above. `GET
+/servers` is unchanged: servers are pool-scoped, not listener-scoped.
 
 ## Backend connection reuse
 
