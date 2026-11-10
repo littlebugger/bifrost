@@ -13,12 +13,12 @@ import (
 	"github.com/littlebugger/bifrost/internal/config"
 )
 
-// This file is the accept loop: cmd/bifrost's entry point for the one
-// configured listener (v1 supports exactly one). It owns the two things
-// neither Session nor Relay can see for themselves: the connection-scoped
-// global_maxconn gate (the Transparency Contract's "Accept overload" row)
-// and resilience against a misbehaving Accept — an EMFILE storm degrades
-// the accept rate, it never exits the loop.
+// This file is the accept loop: cmd/bifrost runs one Serve per configured
+// listener. It owns the two things neither Session nor Relay can see for
+// themselves: the connection-scoped global_maxconn gate (the Transparency
+// Contract's "Accept overload" row) and resilience against a misbehaving
+// Accept — an EMFILE storm degrades the accept rate, it never exits the
+// loop.
 
 // acceptBackoffFloor and acceptBackoffCeil bound the delay between retries
 // after an Accept error that is not a clean shutdown: doubling from
@@ -37,9 +37,14 @@ const (
 // configured listener); tlsCfg is that listener's client-leg certificate,
 // or nil when it has none.
 //
-// global_maxconn (cfg.Limits.GlobalMaxConn; 0 or less means unlimited)
-// is enforced here, before a Session exists at all: a connection over
-// the cap is accepted and immediately answered with the contract's
+// global_maxconn (cfg.Limits.GlobalMaxConn; 0 or less means unlimited) is
+// a PROCESS-wide cap, not a per-listener one, so active is the counter
+// every Serve call for the same process must share: cmd/bifrost's newApp
+// allocates exactly one and passes it to every listener's Serve. A nil
+// active is a private counter Serve allocates for itself — the single-
+// listener behavior every existing caller (and test) keeps unchanged.
+// The cap is enforced here, before a Session exists at all: a connection
+// over it is accepted and immediately answered with the contract's
 // 421 4.3.2 straight on the raw connection, then closed — the one reply
 // in this package written outside a Session or a Txn, because at this
 // point neither exists yet.
@@ -48,11 +53,14 @@ const (
 // it starts and does not return until all of them have: epic 10's drain
 // cancels ctx and then waits on Serve's own return as the signal that
 // nothing is left in flight.
-func Serve(ctx context.Context, ln net.Listener, cfg *config.Config, lst *config.Listener, tlsCfg *tls.Config, h TxnHandler, lg *slog.Logger, metrics ...Metrics) error {
+func Serve(ctx context.Context, ln net.Listener, cfg *config.Config, lst *config.Listener, tlsCfg *tls.Config, h TxnHandler, lg *slog.Logger, active *atomic.Int64, metrics ...Metrics) error {
 	if lg == nil {
 		lg = slog.Default()
 	}
 	m := firstMetrics(metrics)
+	if active == nil {
+		active = new(atomic.Int64)
+	}
 
 	// Closing ln is what unblocks a call parked in Accept; stop lets this
 	// watcher exit on every other return path too; otherwise it would
@@ -70,7 +78,6 @@ func Serve(ctx context.Context, ln net.Listener, cfg *config.Config, lst *config
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
-	var active atomic.Int64
 	maxconn := int64(cfg.Limits.GlobalMaxConn)
 
 	var backoff time.Duration

@@ -179,7 +179,7 @@ func TestChaosMaxconnExhaustion(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan error, 1)
 	go func() {
-		serveDone <- proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, relay, slog.New(slog.DiscardHandler))
+		serveDone <- proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, relay, slog.New(slog.DiscardHandler), nil)
 	}()
 	t.Cleanup(func() {
 		cancel()

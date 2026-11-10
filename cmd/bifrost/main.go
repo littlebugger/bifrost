@@ -126,7 +126,7 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 		smtpWG.Add(1)
 		start("smtp listener "+nl.name, func() error {
 			defer smtpWG.Done()
-			err := proxy.Serve(sessionCtx, nl.ln, cfg, nl.lst, nl.tlsCfg, a.relay, lg, a.metrics)
+			err := proxy.Serve(sessionCtx, nl.ln, cfg, nl.lst, nl.tlsCfg, a.relay, lg, a.globalConns, a.metrics)
 			if err == nil && sessionCtx.Err() == nil {
 				err = errors.New("stopped unexpectedly: no drain in progress")
 			}

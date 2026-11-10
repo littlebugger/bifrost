@@ -59,7 +59,7 @@ func startBifrost(t *testing.T, cfg *config.Config, m *Metrics) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		_ = proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, relay, nil, m)
+		_ = proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, relay, nil, nil, m)
 		close(done)
 	}()
 	t.Cleanup(func() {

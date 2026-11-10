@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/littlebugger/bifrost/internal/admin"
@@ -54,6 +55,14 @@ type app struct {
 
 	smtpLns []namedListener
 	adminLn net.Listener // nil when the config has no admin block
+
+	// globalConns is global_maxconn's counter: ONE process-wide atomic
+	// shared by every listener's proxy.Serve call, below, because the
+	// cap it enforces is a process limit ("global_maxconn stays
+	// global"), not a per-listener one. Allocated once here so N
+	// listeners share N's worth of visibility into the same total,
+	// instead of each silently getting its own cap.
+	globalConns *atomic.Int64
 
 	// certMu/certCache back every listener's GetCertificate: each
 	// listener's certificate is parsed at most once per config
@@ -115,7 +124,7 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	checker := health.New(holder, nil, lg)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(time.Now().UnixNano())))
 
-	a := &app{cfgPath: cfgPath, lg: lg, holder: holder, metrics: m, checker: checker, router: router, runner: runner}
+	a := &app{cfgPath: cfgPath, lg: lg, holder: holder, metrics: m, checker: checker, router: router, runner: runner, globalConns: new(atomic.Int64)}
 
 	// router.Pick/router.Lease go in as closures, which is the whole
 	// reason PickFunc/LeaseFunc are function types: internal/proxy never

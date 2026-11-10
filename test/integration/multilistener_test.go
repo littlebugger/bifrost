@@ -43,7 +43,7 @@ func serveListener(t *testing.T, cfg *config.Config, lst *config.Listener, tlsCf
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- proxy.Serve(ctx, ln, cfg, lst, tlsCfg, h, slog.New(slog.DiscardHandler))
+		done <- proxy.Serve(ctx, ln, cfg, lst, tlsCfg, h, slog.New(slog.DiscardHandler), nil)
 	}()
 	t.Cleanup(func() {
 		cancel()
