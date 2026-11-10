@@ -266,3 +266,68 @@ func TestMultiListenerAuthIsolation(t *testing.T) {
 		t.Errorf("backend DialCount = %d, want 0: neither leg ever reached MAIL", got)
 	}
 }
+
+// TestMultiListenerMixedAuth is scenario 3's sibling: listener a requires
+// client auth, listener b has no Auth block at all. Isolation above
+// proves two present stores never leak into each other; this proves the
+// gate itself is keyed off the arriving listener's own (possibly nil)
+// Auth — b's absence doesn't gate, a's presence does.
+func TestMultiListenerMixedAuth(t *testing.T) {
+	fake := fakesmtp.Start(t, fakesmtp.Script{Caps: backendCaps()})
+	cfg := &config.Config{
+		Defaults: config.Defaults{Timeouts: m1Timeouts()},
+		Listeners: []config.Listener{
+			{
+				Name:         "a",
+				Hostname:     "bifrost.test",
+				Capabilities: []string{"PIPELINING", "8BITMIME", "STARTTLS"},
+				Auth: &config.ListenerAuth{
+					Users: []config.AuthUser{authTestUser(clientAuthUser, clientAuthSalt, clientAuthPass)},
+				},
+			},
+			{
+				Name:         "b",
+				Hostname:     "bifrost.test",
+				Capabilities: []string{"PIPELINING", "8BITMIME"},
+				// No Auth block: listener b gates nothing.
+			},
+		},
+		Pools:   []config.Pool{{Name: "p", Balance: "roundrobin", BackendTLS: "none", EhloName: "bifrost.test", Servers: []config.Server{{Name: "s0", Address: fake.Addr(), Weight: 1}}}},
+		Routing: config.Routing{DefaultPool: "p"},
+	}
+	relay := newRelay(cfg)
+
+	listenerTLS := fakesmtp.TestCert(t)
+	addrA := serveListener(t, cfg, &cfg.Listeners[0], listenerTLS, relay)
+	addrB := serveListener(t, cfg, &cfg.Listeners[1], nil, relay)
+
+	// Listener a: auth required, STARTTLS first (auth_test.go's own
+	// rule), unauthenticated MAIL is gated.
+	cA := smtpdrv.Dial(t, addrA)
+	cA.Expect("220")
+	cA.Send("EHLO client.example")
+	cA.Expect("250")
+	cA.StartTLS(listenerTLS)
+	cA.Send("EHLO client.example")
+	cA.Expect("250")
+	cA.Send("MAIL FROM:<sender@test.example>")
+	if reply := cA.Expect("530"); reply.Lines[0] != "530 5.7.0 Authentication required" {
+		t.Fatalf("listener a unauthenticated MAIL reply = %q, want the exact 530 text", reply.Lines[0])
+	}
+	cA.Send("QUIT")
+	cA.Expect("221")
+
+	// Listener b: no auth configured at all, MAIL proceeds straight
+	// through without ever being asked for AUTH.
+	cB := smtpdrv.Dial(t, addrB)
+	cB.Expect("220")
+	cB.Send("EHLO client.example")
+	cB.Expect("250")
+	sendOneMessage(t, cB, "sender@test.example")
+	cB.Send("QUIT")
+	cB.Expect("221")
+
+	if got := fake.DialCount(); got != 1 {
+		t.Errorf("backend DialCount = %d, want 1: only listener b's transaction ever reached the backend", got)
+	}
+}

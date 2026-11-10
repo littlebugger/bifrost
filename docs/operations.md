@@ -711,7 +711,14 @@ check is checked against:
   (`TestSyncPopulatesUnionCapabilities`, `internal/health/
   scheduler_test.go`), and the probe-level superset check against it
   (`TestProbeRequiresUnionOfListenerCapabilities`, `internal/health/
-  probe_test.go`).
+  probe_test.go`). The prober's union is live — it re-reads off the
+  swapped-in config at the next resync — while a transaction's
+  per-listener set is read off the `*config.Listener` each listener's
+  accept loop captured at startup; a reload that edits capabilities is
+  one of the `RestartRequired` warnings below, so the two can disagree
+  (the prober checking against the new set, transactions still enforcing
+  the old one) for exactly the window between that reload and the
+  restart it already told you to do.
 
 **Auth isolation.** Each listener's `auth` block is its own user store —
 a credential valid on one listener is simply unknown on another, same
@@ -1043,6 +1050,7 @@ delivered message, a latched failure, a client hangup, `RSET`) —
 | `client` | client IP |
 | `helo` | the session's `EHLO`/`HELO` argument |
 | `listener` | the name of the listener the session arrived on (`"default"` for the common single-, unlabeled-listener case) — see "Multiple listeners" below |
+| `authn` | the authenticated client identity (`AUTH`'s authcid, RFC 4954), empty if the session never authenticated |
 | `pool`, `server` | the last-attached candidate, if any (`""` if every dial attempt failed) |
 | `mail_verdict` | the `MAIL` command's own reply code |
 | `rcpt_count` | recipients answered |

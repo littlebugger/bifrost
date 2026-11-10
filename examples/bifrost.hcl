@@ -6,8 +6,10 @@
 
 defaults {
   # Traffic EHLO identity used when neither a pool nor its servers set
-  # their own ehlo_name. Falls back further to listener.hostname if this
-  # is also omitted.
+  # their own ehlo_name. Falls back further to the FIRST configured
+  # listener's hostname if this is also omitted -- with more than one
+  # listener, set ehlo_name explicitly here rather than relying on
+  # whichever listener happens to be first.
   ehlo_name = "mail.example.com"
 
   # Every row of PROJECT.md's timeout budget table. These are the

@@ -35,14 +35,18 @@ type Config struct {
 	fileRange hcl.Range
 }
 
-// PrimaryListener returns the first configured listener: the transitional
-// accessor every current consumer uses, since they all still assume a
-// single listener (multi-listener routing is Tasks 3-4). Defensive against
-// a zero-listener Config instead of indexing bare into Listeners: a
-// syntactically valid but listener-less file can reach resolveInheritance
-// and the holder before Validate's "Missing listener block" error has a
-// chance to reject it (see cmd/bifrost's diags.HasErrors() gate, which
-// runs after both).
+// PrimaryListener returns the first configured listener. Multi-listener
+// routing is live and per-transaction code paths use the arriving
+// listener's own fields directly, never this; its one remaining caller is
+// defaults.go's pool.EhloName fallback, a listener-agnostic default that
+// has to pick *some* hostname when a single-listener config leaves
+// ehlo_name unset everywhere (see docs/operations.md's "Multiple
+// listeners" section for the multi-listener caveat this implies).
+// Defensive against a zero-listener Config instead of indexing bare into
+// Listeners: a syntactically valid but listener-less file can reach
+// resolveInheritance and the holder before Validate's "Missing listener
+// block" error has a chance to reject it (see cmd/bifrost's
+// diags.HasErrors() gate, which runs after both).
 func (c *Config) PrimaryListener() *Listener {
 	if len(c.Listeners) == 0 {
 		return &Listener{}
@@ -274,7 +278,7 @@ type Pool struct {
 	BackendTLS           string // "none" | "starttls" | "starttls-verify"; default "none"
 	BackendTLSServerName string
 	BackendTLSCA         string
-	EhloName             string // resolved: pool -> defaults.ehlo_name -> listener hostname
+	EhloName             string // resolved: pool -> defaults.ehlo_name -> first listener's hostname (PrimaryListener; set defaults.ehlo_name explicitly with multiple listeners)
 	MaxTransactions      int    // pool-level default for servers' max_transactions
 	ReuseEnvelopes       int    // 0 or 1 (default): fresh conn per envelope; N>1: session-affine reuse, capped at N envelopes per backend conn
 	Check                CheckParams
@@ -352,8 +356,8 @@ type Routing struct {
 // RoutingRule matches on client CIDR and/or MAIL FROM domain (wildcard
 // prefix allowed, e.g. "*.news.example.com") and selects a pool. Listener
 // optionally restricts the rule to sessions accepted on one of the named
-// listeners (decode only here; matching against the session's actual
-// listener is Task 2).
+// listeners (see internal/balance/rules.go for the match against the
+// session's actual listener).
 type RoutingRule struct {
 	ClientCIDR     []string
 	MailFromDomain []string

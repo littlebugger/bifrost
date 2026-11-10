@@ -46,7 +46,8 @@ const (
 // whether to verify the certificate it presents), RequiredCaps = the
 // listener's advertised capability set (each entry "NAME" or "NAME
 // value", e.g. "SIZE 10485760" — the same shape as
-// config.Listener.Capabilities, via config.Config.PrimaryListener()).
+// config.Listener.Capabilities, from the arriving listener — the
+// transaction's own, not any process-wide default).
 type Opts struct {
 	EhloName     string
 	TLSMode      string

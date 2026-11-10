@@ -1,7 +1,6 @@
 # Multiple labeled listeners -- separate binds for separate traffic
 # shapes, routed to separate pools by a routing rule's `listener`
-# attribute. See README.md's Configuration table (this feature has no
-# docs/operations.md section yet).
+# attribute. See docs/operations.md's "Multiple listeners" section.
 #
 # Each listener block needs a label the moment there is more than one;
 # bind and name must each be unique across the set. routing.rule.pool

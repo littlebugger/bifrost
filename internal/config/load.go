@@ -99,7 +99,16 @@ func decodeListeners(body *hclsyntax.Body) ([]rawListener, hcl.Diagnostics) {
 		var rl rawListener
 		diags = append(diags, gohcl.DecodeBody(blk.Body, nil, &rl)...)
 		rl.Range = blk.DefRange()
-		if len(blk.Labels) > 0 {
+		switch len(blk.Labels) {
+		case 0:
+			// Unlabeled is the single-listener common case; rawFile.convert
+			// names it "default" once decode finishes. Not an error.
+		case 1:
+			rl.Name = blk.Labels[0]
+		default:
+			diags = append(diags, errDiag(blk.LabelRanges[1], "listener block takes at most one label",
+				fmt.Sprintf("listener block has %d labels; a listener's name is a single label, e.g. listener %q { ... }.",
+					len(blk.Labels), blk.Labels[0])))
 			rl.Name = blk.Labels[0]
 		}
 		listeners = append(listeners, rl)

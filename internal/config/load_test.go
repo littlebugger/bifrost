@@ -400,6 +400,33 @@ func TestLoadUnknownAttribute(t *testing.T) {
 	}
 }
 
+// TestLoadListenerTwoLabels pins decodeListeners' label-count check
+// (load.go): a listener block takes at most one label (its name), the
+// same hard decode-time failure shape as TestLoadUnknownAttribute/
+// TestLoadMissingRequired above, not a soft Validate-stage warning —
+// silently keeping only the first label and dropping the rest would be
+// exactly the kind of surprise this rejects outright instead.
+func TestLoadListenerTwoLabels(t *testing.T) {
+	cfg, diags := Load("testdata/bad-listener-two-labels.hcl")
+	if !diags.HasErrors() {
+		t.Fatalf("Load(bad-listener-two-labels.hcl) diags = %v, want an error", diags)
+	}
+	if cfg != nil {
+		t.Errorf("Load(bad-listener-two-labels.hcl) cfg = %+v, want nil on error", cfg)
+	}
+	d := findDiag(diags, "listener block takes at most one label")
+	if d == nil {
+		t.Fatalf("diags = %v, want one mentioning %q", diags, "listener block takes at most one label")
+	}
+	if d.Subject == nil {
+		t.Fatalf("diagnostic %v has no Subject range", d)
+	}
+	const wantLine = 1
+	if d.Subject.Start.Line != wantLine {
+		t.Errorf("diagnostic line = %d, want %d (%v)", d.Subject.Start.Line, wantLine, d)
+	}
+}
+
 func TestLoadMissingRequired(t *testing.T) {
 	cfg, diags := Load("testdata/missing-required.hcl")
 	if !diags.HasErrors() {
