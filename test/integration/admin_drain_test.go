@@ -120,7 +120,7 @@ func TestDrainMidClientConnection(t *testing.T) {
 	checker := health.New(holder, nil, quiet)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(1)))
 	m := metrics.New()
-	adminH := admin.New("", holder, checker, router, m, nil).Handler()
+	adminH := admin.New(holder, checker, router, m, nil, nil).Handler()
 
 	checkerCtx, checkerCancel := context.WithCancel(context.Background())
 	checkerDone := make(chan struct{})

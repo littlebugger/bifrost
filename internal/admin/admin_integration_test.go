@@ -56,7 +56,7 @@ func TestServersEndpointUnderTraffic(t *testing.T) {
 	checker := health.New(holder, nil, nil)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(1)))
 	m := metrics.New()
-	adminSrv := New("", holder, checker, router, m, nil)
+	adminSrv := New(holder, checker, router, m, nil, nil)
 
 	checkerStop := runChecker(checker)
 	defer checkerStop()

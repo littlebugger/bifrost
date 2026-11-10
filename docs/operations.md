@@ -675,11 +675,150 @@ Proven by the `TestReuse*` suite in `internal/proxy/relay_test.go`
 failover above, plus `TestReuseEnvelopesOmittedDialsFreshPerEnvelope`,
 which pins today's default behavior unchanged).
 
+## DNS-discovered pool members
+
+A `server_dns` block is a server *template*: one DNS name whose answer
+stands in for N pool members, instead of N hand-written `server` blocks.
+It shares `server`'s `weight`/`backup`/`max_transactions`/`check {}`
+fields — inherited by every member it expands into — plus its own
+`resolve_interval`:
+
+```hcl
+pool "routes" {
+  balance = "leastconn"
+
+  server_dns "node" {
+    address          = "mta.headless.svc.cluster.local:587"
+    resolve_interval = "30s"   # default; 1s floor, enforced at load
+    weight           = 1
+  }
+
+  server "static-extra" { address = "10.9.8.7:587" }   # mixing is fine
+}
+```
+
+The typical source is a Kubernetes headless `Service`
+(`clusterIP: None`): its DNS name answers with one A/AAAA record per
+ready Pod instead of one VIP — exactly the "N servers behind one name"
+shape this feature targets. Pointing a plain `server.address` at that
+same name instead gives only one health status for all N Pods and no
+SMTP-level failover between them; that gap is this feature's own
+motivation (PROJECT.md's D16).
+
+### Member naming and expansion
+
+Every resolved IP becomes a full pool member named `<template>-<ip>`
+(e.g. `node-10.1.2.3`), at the template's own port — there is no SRV
+support, so the port always comes from the template's `address`, never
+per-member. Each member is a complete pool citizen: its own health FSM
+and active probes, its own lease/in-flight accounting, its own metrics
+labels, a normal candidate in the failover walk and in reuse-affinity.
+Members are sorted by IP and capped at 256 per template
+(`config.MaxTemplateMembers`); an answer over that cap is truncated
+deterministically (the sorted tail is dropped) and logged — proven by
+`TestExpandDNSTruncatesAt256SortedTailDropped`
+(`internal/config/dns_test.go`) and, end to end against two real
+fakesmtp backends, `TestDNSDiscoveryMembershipAcrossBothMembers`
+(`test/integration/dnsdiscovery_test.go`).
+
+### No TTL, fixed interval
+
+Go's resolver (`net.DefaultResolver.LookupNetIP`, what production wiring
+uses) exposes no TTL, so refresh cannot be TTL-driven — `resolve_interval`
+is a fixed poll period instead (default `30s`, 1s floor enforced at
+config load), jittered ±10% so many templates don't all re-resolve in
+lockstep. This is a documented constraint, not an oversight.
+
+### Fail-static: a DNS blip never empties a pool
+
+A lookup error or an empty answer **keeps the last-known-good
+membership** and only logs/counts the failure (HAProxy "hold"
+semantics) — proven by `TestLookupErrorKeepsLastKnownGood` and
+`TestEmptyAnswerKeepsLastKnownGood` (`internal/discover/discover_test.go`)
+and, against a real flipping resolver,
+`TestDNSDiscoveryEmptyAnswerKeepsMembership`
+(`test/integration/dnsdiscovery_test.go`). The one exception is the very
+first resolution: if it fails at startup, the pool starts with that
+template unexpanded (no members from it yet) and a loud log; the
+resolver keeps retrying on its own interval.
+
+### DNS answers are a trust boundary
+
+An unspecified (`0.0.0.0`/`::`) or multicast address in the answer is
+dropped before it can become a member — dialing `0.0.0.0:<port>` reaches
+the local host, which can be Bifrost's own listener — and an answer left
+empty by that filter is treated exactly like the empty-answer case above
+(proven by `TestSinkholeAnswerFilteredFromMembers` and
+`TestAllSinkholeAnswerTreatedAsEmpty`, `internal/discover/discover_test.go`).
+Loopback is deliberately not filtered (the integration suite dials it),
+so one gap stays operator-owned: a template's name must never resolve to
+an address Bifrost itself listens on, or Bifrost will probe and relay to
+itself in a self-relay loop.
+
+### Continuity across membership changes is NAME-based
+
+Discovery is an internal reload: one resolver goroutine per template
+polls on `resolve_interval`, and only an actual membership delta (the
+set of IPs changed) rebuilds the expanded members and swaps the config
+holder — a stable farm costs zero churn. Health-FSM state, probe
+counters, and admin overrides all persist across that swap by the
+member's stable NAME (`<template>-<ip>`), not by a surviving `*Server`
+pointer — `internal/health`'s checker already keys and syncs its
+registry by name, the same mechanism a plain server's reload survival
+uses (see the reload survival matrix above). The one cost of a delta is
+a single silent reuse-affinity re-dial: a cached connection's pointer
+match fails across the swap, so the next envelope on that session just
+re-dials — the same self-healing path "Backend connection reuse" above
+already documents — proven by
+`TestDNSDiscoveryRemoveMemberFailsOverAndRedialsAffinity`
+(`test/integration/dnsdiscovery_test.go`).
+
+### Reload and restart
+
+An operator reload (`POST /reload` or `SIGHUP`) re-renders every
+template from the resolver's own last-known-good answer — the resolver
+owns membership, the file owns everything else — through the same
+Runner-aware `applyReload` every other reload path uses
+(`cmd/bifrost/reload.go`). Two discovery-specific restart caveats, both
+because discovery starts exactly one resolver goroutine per template at
+process start — capturing that template's address/resolve_interval by
+value — and can neither start nor stop a goroutine nor pick up either
+field's edit afterward: **adding or removing a `server_dns` block**, and
+**editing an existing template's `address` or `resolve_interval`**
+(not a change to its live IP set, which needs no restart at all) only
+take effect after a restart. A reload that changes the template set OR
+either field on a surviving template logs
+`server_dns template set or settings changed: restart required to apply`
+and still applies the rest of the file — the same partial-apply pattern
+the listener-identity warnings in the survival matrix above already use
+— proven by `TestRestartRequiredTemplateSetChanged`
+(`internal/config/holder_test.go`).
+
+### Observability
+
+Three metrics. The two counters compose `template` as `"pool/name"` (so
+two pools that happen to name a template identically still get distinct
+series); the gauge instead carries `pool` and `template` as two separate
+labels:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `bifrost_dns_discovery_total` | counter | `template`, `result` (`ok`/`error`/`empty`) | every resolution attempt's outcome |
+| `bifrost_dns_discovery_changes_total` | counter | `template` | membership deltas that actually swapped the config |
+| `bifrost_pool_discovered_members` | gauge | `pool`, `template` | the template's current member count |
+
+`GET /servers` rows for a discovered member carry `"discovered": true`
+and `"template": "node"`; a static server's row carries neither field at
+all (omitted, not `false`/`""`) — proven by
+`TestServersEndpointDiscoveredField` (`internal/admin/admin_test.go`).
+All three metrics round-trip through a real registry, proven by
+`TestDNSDiscoveryMetrics` (`internal/metrics/metrics_test.go`).
+
 ## Metrics reference
 
-Thirteen stable names (golden-list tested by `TestMetricNamesStable`,
+Sixteen stable names (golden-list tested by `TestMetricNamesStable`,
 `internal/metrics/metrics_test.go` — a name change here is a breaking
-change to anyone's dashboards), and all thirteen actually present in a
+change to anyone's dashboards), and all sixteen actually present in a
 live scrape of the real `GET /metrics` handler — proven by
 `TestMetricsServed` (`internal/admin/admin_test.go`), which is what
 would have caught `ServerCollector` not being registered on the
@@ -700,6 +839,9 @@ registry `admin.New` serves:
 | `bifrost_server_state_changes_total` | counter | `pool`, `server` | active-check UP/DOWN flips, cumulative — for flap alerting |
 | `bifrost_in_flight` | gauge | `pool`, `server` | transactions currently attached |
 | `bifrost_duplicate_risk_total` | counter | — | transactions where a backend died after the final dot but before a verdict |
+| `bifrost_dns_discovery_total` | counter | `template` (`"pool/name"`), `result` (`ok`/`error`/`empty`) | `server_dns` resolution attempts — see "DNS-discovered pool members" above |
+| `bifrost_dns_discovery_changes_total` | counter | `template` (`"pool/name"`) | `server_dns` membership deltas that swapped the config |
+| `bifrost_pool_discovered_members` | gauge | `pool`, `template` | a `server_dns` template's current member count |
 
 `bifrost_probe_total` and `bifrost_backend_dials_total` deliberately
 omit `pool` (PROJECT.md's own Produces contract): if two pools share a

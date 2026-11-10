@@ -61,11 +61,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return serve(*configPath, cfg, stderr)
 }
 
-// serve runs the process until a shutdown signal: the three long-runners
-// (SMTP accept loop, health checker, admin plane) under one WaitGroup and
+// serve runs the process until a shutdown signal: the SMTP accept loop,
+// health checker, and admin plane as long-runners under one WaitGroup and
 // one error channel — stdlib only, no errgroup (epic-00's dependency
-// budget) — plus the signal loop. SIGHUP reloads the config file in place;
-// SIGTERM/SIGINT run the drain sequence and exit 0.
+// budget) — plus the signal loop, plus a conditional fourth long-runner
+// (dns discovery) when the config declares any server_dns template.
+// SIGHUP reloads the config file in place; SIGTERM/SIGINT run the drain
+// sequence and exit 0.
 //
 // Two contexts, not one: sessionCtx is cancelled when the drain starts (it
 // is what tells sessions the process is going away), rootCtx only once
@@ -107,6 +109,9 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 		return proxy.Serve(sessionCtx, a.smtpLn, cfg, a.tlsCfg, a.relay, lg, a.metrics)
 	})
 	start("health checker", func() error { a.checker.Run(rootCtx); return nil })
+	if a.runner != nil {
+		start("dns discovery", func() error { a.runner.Run(rootCtx); return nil })
+	}
 	if a.adminLn != nil {
 		start("admin api", func() error { return a.admin.Serve(rootCtx, a.adminLn) })
 	}

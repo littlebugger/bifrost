@@ -208,7 +208,8 @@ type Pool struct {
 	ReuseEnvelopes       int    // 0 or 1 (default): fresh conn per envelope; N>1: session-affine reuse, capped at N envelopes per backend conn
 	Check                CheckParams
 	Servers              []Server
-	Auth                 *PoolAuth // nil: backend-leg SMTP AUTH disabled
+	DNSTemplates         []ServerDNS // server_dns blocks: each expands at runtime into per-IP Server members (see internal/discovery)
+	Auth                 *PoolAuth   // nil: backend-leg SMTP AUTH disabled
 
 	// CAPool is BackendTLSCA parsed exactly once per config load (see
 	// resolveBackendCAs): both consumers of a pool's backend-leg TLS —
@@ -233,10 +234,39 @@ type Server struct {
 	MaxTransactions int
 	Check           CheckParams
 
+	// DNSTemplate names the server_dns template this Server was expanded
+	// from (ExpandDNS sets it); empty for a plain, operator-declared
+	// server. internal/admin's /servers row builder reads this to decide
+	// a row's "discovered"/"template" fields (design doc's Observability
+	// section).
+	DNSTemplate string
+
 	rng         hcl.Range
 	weightRange hcl.Range // anchors "weight out of range" at the weight attribute itself
 
 	maxTxnRange hcl.Range // set only when this tier wrote max_transactions itself
+}
+
+// ServerDNS is a server template: one DNS name that expands at runtime
+// into per-IP members (see docs/superpowers/specs/2026-11-09-dns-discovery-
+// design.md). Its field set otherwise mirrors Server — Weight, Backup,
+// MaxTransactions, and Check are inherited by every member a template
+// expands into, and Check rides the exact same defaults cascade and pool-
+// auth copy as a static server's (see defaults.go, load.go).
+type ServerDNS struct {
+	Name            string
+	Address         string // host:port; host must not be an IP literal (see validateServerDNSAddress)
+	ResolveInterval time.Duration
+	Weight          int
+	Backup          bool
+	MaxTransactions int
+	Check           CheckParams
+
+	rng         hcl.Range
+	weightRange hcl.Range // anchors "weight out of range" at the weight attribute itself
+
+	resolveIntervalRange hcl.Range // anchors "resolve_interval out of range" at the attribute itself
+	maxTxnRange          hcl.Range // set only when this tier wrote max_transactions itself
 }
 
 // Routing is the ordered set of pool-selection rules plus the fallthrough

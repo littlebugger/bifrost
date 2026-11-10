@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestHolderSwapVisibleToReaders runs several reader goroutines calling
@@ -184,4 +185,74 @@ func TestRestartRequiredListenerAuthCleartext(t *testing.T) {
 			t.Errorf("RestartRequired(old, identical) = %v, want no listener auth warning for identical auth", w)
 		}
 	}
+}
+
+// TestRestartRequiredTemplateSetChanged: internal/discover.Runner starts
+// exactly one goroutine per server_dns template at process start and can
+// neither start nor stop one afterward (ruling after Task 3's review), so
+// a reload that adds (or removes) a server_dns block must warn restart
+// required — the same precedent as a listener-identity edit above — and
+// an identical template set between two configs must warn about nothing.
+// Editing a surviving template's address or resolve_interval warns the
+// same way: Run's goroutine captured the old ServerDNS by value at
+// startup, so neither edit takes effect without a restart either
+// (final-fix-brief.md item 1).
+func TestRestartRequiredTemplateSetChanged(t *testing.T) {
+	const marker = "server_dns template set or settings changed"
+
+	withoutTemplate := &Config{Pools: []Pool{
+		{Name: "routes", Servers: []Server{{Name: "static-extra", Address: "10.9.8.7:587", Weight: 1}}},
+	}}
+	withTemplate := &Config{Pools: []Pool{
+		{
+			Name:    "routes",
+			Servers: []Server{{Name: "static-extra", Address: "10.9.8.7:587", Weight: 1}},
+			DNSTemplates: []ServerDNS{
+				{Name: "node", Address: "svc.local:587", ResolveInterval: 30 * time.Second, Weight: 1},
+			},
+		},
+	}}
+
+	if w := RestartRequired(withoutTemplate, withTemplate); !hasWarning(w, marker) {
+		t.Fatalf("RestartRequired(without, with) = %v, want a server_dns template set warning", w)
+	}
+	if w := RestartRequired(withTemplate, withTemplate); hasWarning(w, marker) {
+		t.Errorf("RestartRequired(with, with) = %v, want no warning for an identical set", w)
+	}
+
+	addressChanged := &Config{Pools: []Pool{
+		{
+			Name:    "routes",
+			Servers: []Server{{Name: "static-extra", Address: "10.9.8.7:587", Weight: 1}},
+			DNSTemplates: []ServerDNS{
+				{Name: "node", Address: "other.local:587", ResolveInterval: 30 * time.Second, Weight: 1},
+			},
+		},
+	}}
+	if w := RestartRequired(withTemplate, addressChanged); !hasWarning(w, marker) {
+		t.Errorf("RestartRequired(with, address-changed) = %v, want a warning: same key, new address", w)
+	}
+
+	intervalChanged := &Config{Pools: []Pool{
+		{
+			Name:    "routes",
+			Servers: []Server{{Name: "static-extra", Address: "10.9.8.7:587", Weight: 1}},
+			DNSTemplates: []ServerDNS{
+				{Name: "node", Address: "svc.local:587", ResolveInterval: 60 * time.Second, Weight: 1},
+			},
+		},
+	}}
+	if w := RestartRequired(withTemplate, intervalChanged); !hasWarning(w, marker) {
+		t.Errorf("RestartRequired(with, interval-changed) = %v, want a warning: same key, new resolve_interval", w)
+	}
+}
+
+// hasWarning reports whether any warning in warnings contains substr.
+func hasWarning(warnings []string, substr string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, substr) {
+			return true
+		}
+	}
+	return false
 }

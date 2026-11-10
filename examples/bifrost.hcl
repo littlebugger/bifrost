@@ -119,6 +119,24 @@ pool "bulk" {
     weight  = 1
   }
 
+  # DNS-discovered members, disabled here: a server_dns block is a server
+  # *template* -- one DNS name that expands at runtime into one pool
+  # member per resolved IP (named node-<ip>, at this template's own
+  # port), each a full pool citizen: own health FSM, leases, metrics
+  # labels, failover candidate, reuse-affinity target. Typical source is
+  # a k8s headless Service (clusterIP: None), whose name answers with one
+  # A/AAAA record per ready Pod instead of one VIP. Go's resolver exposes
+  # no TTL, so refresh is a fixed, jittered interval (resolve_interval),
+  # not TTL-driven; a lookup error or an empty answer keeps the
+  # last-known-good membership (fail-static) rather than ever emptying
+  # the pool. Mixing with static server {} blocks above is fine. Uncomment
+  # to enable:
+  # server_dns "node" {
+  #   address          = "mta.headless.svc.cluster.local:587"
+  #   resolve_interval = "30s"   # default; 1s floor
+  #   weight           = 1
+  # }
+
   # Backend-leg SMTP AUTH, disabled here. Requires backend_tls != "none"
   # (already set above) -- bifrost sends this password as PLAIN, in the
   # clear, only over that encrypted leg. Unlike the listener's hash,

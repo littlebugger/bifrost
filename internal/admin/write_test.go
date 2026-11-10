@@ -2,17 +2,23 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
+
 	"github.com/littlebugger/bifrost/internal/balance"
 	"github.com/littlebugger/bifrost/internal/config"
+	"github.com/littlebugger/bifrost/internal/discover"
 	"github.com/littlebugger/bifrost/internal/health"
 	"github.com/littlebugger/bifrost/internal/metrics"
 )
@@ -53,7 +59,44 @@ func loadedServer(t *testing.T, path string) (*Server, *config.Holder, *balance.
 	checker := health.New(holder, nil, nil)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(1)))
 	m := metrics.New()
-	return New(path, holder, checker, router, m, nil), holder, router
+	return New(holder, checker, router, m, reloadCycle(path, holder, router, nil), nil), holder, router
+}
+
+// reloadCycle is the test-only stand-in for cmd/bifrost's applyReload:
+// package main can't be imported, so this reimplements the same
+// load/validate/swap sequence (runner-aware when one is given) to prove
+// admin.Server's HTTP wiring round-trips whatever a ReloadFunc reports.
+// Production's one real implementation is cmd/bifrost/reload.go's
+// applyReload; this exists only so admin's own tests can exercise the
+// handler without cmd/bifrost in the import graph.
+func reloadCycle(path string, holder *config.Holder, router *balance.Router, runner *discover.Runner) ReloadFunc {
+	return func() (diff string, discardedWeights, restartRequired, errs []string) {
+		newCfg, diags := config.Load(path)
+		if diags.HasErrors() {
+			for _, d := range diags {
+				if d.Severity == hcl.DiagError {
+					errs = append(errs, d.Error())
+				}
+			}
+			return "", nil, nil, errs
+		}
+
+		old := holder.Load()
+		if err := config.BindChange(old, newCfg); err != nil {
+			return "", nil, nil, []string{err.Error()}
+		}
+
+		restartRequired = config.RestartRequired(old, newCfg)
+		if runner != nil {
+			runner.Rerender(newCfg)
+		} else {
+			holder.Swap(newCfg)
+		}
+
+		discardedWeights = router.ResetWeights()
+		diff = config.DiffSummary(old, holder.Load())
+		return diff, discardedWeights, restartRequired, nil
+	}
 }
 
 const goodConfigHCL = `
@@ -316,6 +359,106 @@ func TestReloadEndpointBad(t *testing.T) {
 
 	if holder.Load() != before {
 		t.Fatalf("the live config changed despite a failed reload")
+	}
+}
+
+// dnsTemplateHCL is goodConfigHCL's shape with one server_dns template
+// instead of a static server — weight is the only thing that changes
+// between the two writeFile calls below, so a reload's effect on it is
+// unambiguous.
+func dnsTemplateHCL(weight int) string {
+	return fmt.Sprintf(`
+listener {
+  bind     = "127.0.0.1:2525"
+  hostname = "bifrost.test"
+}
+
+pool "p" {
+  balance = "roundrobin"
+
+  server_dns "node" {
+    address          = "mta.discovery.test:587"
+    resolve_interval = "1s"
+    weight           = %d
+  }
+}
+
+routing {
+  default_pool = "p"
+}
+`, weight)
+}
+
+// TestReloadEndpointKeepsDiscoveredDNSMembers is the regression test for
+// the admin reload path bypassing discover.Runner (task 4's fix round):
+// POST /reload must apply through the exact Runner-aware sequence SIGHUP
+// uses (Rerender), not a bare holder.Swap — a bare Swap would (1) strip
+// discovered members out of the live pool immediately, since fail-static
+// means they never come back on their own (no delta, no resolver-driven
+// swap), and (2) leave Runner.base stale, so the very next real DNS
+// delta would re-expand the OLD base and silently discard whatever the
+// admin reload just edited.
+func TestReloadEndpointKeepsDiscoveredDNSMembers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	writeFile(t, path, dnsTemplateHCL(1))
+
+	cfg, diags := config.Load(path)
+	if diags.HasErrors() {
+		t.Fatalf("initial load of %s: %v", path, diags)
+	}
+	holder := &config.Holder{}
+	lookup := func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("10.9.0.1"), netip.MustParseAddr("10.9.0.2")}, nil
+	}
+	runner := discover.New(holder, lookup, nil, nil)
+	holder.Swap(config.ExpandDNS(cfg, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runner.Run(ctx)
+
+	hasMember := func(name string) bool {
+		for _, p := range holder.Load().Pools {
+			for _, srv := range p.Servers {
+				if srv.Name == name {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	waitFor(t, func() bool { return hasMember("node-10.9.0.1") && hasMember("node-10.9.0.2") })
+
+	checker := health.New(holder, nil, nil)
+	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(1)))
+	m := metrics.New()
+	s := New(holder, checker, router, m, reloadCycle(path, holder, router, runner), nil)
+	h := s.Handler()
+
+	// Edit the template's weight, not its membership, and reload.
+	writeFile(t, path, dnsTemplateHCL(5))
+	resp, body := do(t, h, "/reload", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", resp.StatusCode, body)
+	}
+
+	var weight1, weight2 int
+	var found1, found2 bool
+	for _, p := range holder.Load().Pools {
+		for _, srv := range p.Servers {
+			switch srv.Name {
+			case "node-10.9.0.1":
+				found1, weight1 = true, srv.Weight
+			case "node-10.9.0.2":
+				found2, weight2 = true, srv.Weight
+			}
+		}
+	}
+	if !found1 || !found2 {
+		t.Fatalf("after admin reload, discovered members missing: cfg = %+v", holder.Load())
+	}
+	if weight1 != 5 || weight2 != 5 {
+		t.Errorf("weights after reload = (%d, %d), want (5, 5) -- the edited template weight applied", weight1, weight2)
 	}
 }
 

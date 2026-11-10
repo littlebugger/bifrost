@@ -58,7 +58,7 @@ func waitForProbe(t *testing.T, c *health.Checker, pool, server string) {
 // TestMetricNamesStable is the golden-list contract test: a real
 // registry — the push-based Metrics and the pull-based ServerCollector
 // registered together on it, exactly the way internal/admin.New wires
-// them for a live /metrics scrape — Gather()s exactly the twelve stable
+// them for a live /metrics scrape — Gather()s exactly the sixteen stable
 // names PROJECT.md's Produces block documents, no more, no fewer.
 //
 // Registering ServerCollector here (rather than only checking its
@@ -74,6 +74,9 @@ func TestMetricNamesStable(t *testing.T) {
 	m.relayBytes.WithLabelValues("to_client")
 	m.backendDials.WithLabelValues("s", "ok")
 	m.backendConnReuse.WithLabelValues("s", "reused")
+	m.dnsDiscovery.WithLabelValues("p/t", "ok")
+	m.dnsDiscoveryChanges.WithLabelValues("p/t")
+	m.discoveredMembers.WithLabelValues("p", "t")
 
 	holder := &config.Holder{}
 	holder.Swap(oneServerConfig(closedAddr(t)))
@@ -113,6 +116,9 @@ func TestMetricNamesStable(t *testing.T) {
 		"bifrost_server_state_changes_total",
 		"bifrost_in_flight",
 		"bifrost_duplicate_risk_total",
+		"bifrost_dns_discovery_total",
+		"bifrost_dns_discovery_changes_total",
+		"bifrost_pool_discovered_members",
 	}
 	for _, name := range want {
 		if !got[name] {
@@ -148,5 +154,47 @@ func TestBackendReuse(t *testing.T) {
 	}
 	if got := CounterValue(mfs, "bifrost_backend_conn_reuse_total", map[string]string{"server": "s1", "outcome": "capped"}); got != 1 {
 		t.Errorf("BackendReuse s1 capped: got %v, want 1", got)
+	}
+}
+
+// TestDNSDiscoveryMetrics verifies the three internal/discover.Metrics
+// methods (design doc's Observability section): Discovery/DiscoveryChange
+// counters and the DiscoveredMembers gauge, each with their documented
+// labels.
+func TestDNSDiscoveryMetrics(t *testing.T) {
+	m := New()
+	m.Discovery("routes/node", "ok")
+	m.Discovery("routes/node", "ok")
+	m.Discovery("routes/node", "error")
+	m.DiscoveryChange("routes/node")
+	m.DiscoveredMembers("routes", "node", 3)
+
+	mfs, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	if got := CounterValue(mfs, "bifrost_dns_discovery_total", map[string]string{"template": "routes/node", "result": "ok"}); got != 2 {
+		t.Errorf("dns_discovery_total{result=ok}: got %v, want 2", got)
+	}
+	if got := CounterValue(mfs, "bifrost_dns_discovery_total", map[string]string{"template": "routes/node", "result": "error"}); got != 1 {
+		t.Errorf("dns_discovery_total{result=error}: got %v, want 1", got)
+	}
+	if got := CounterValue(mfs, "bifrost_dns_discovery_changes_total", map[string]string{"template": "routes/node"}); got != 1 {
+		t.Errorf("dns_discovery_changes_total: got %v, want 1", got)
+	}
+	if got := GaugeValue(mfs, "bifrost_pool_discovered_members", map[string]string{"pool": "routes", "template": "node"}); got != 3 {
+		t.Errorf("pool_discovered_members: got %v, want 3", got)
+	}
+
+	// DiscoveredMembers is a gauge: a later call with a smaller n must
+	// overwrite, not accumulate.
+	m.DiscoveredMembers("routes", "node", 1)
+	mfs, err = m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if got := GaugeValue(mfs, "bifrost_pool_discovered_members", map[string]string{"pool": "routes", "template": "node"}); got != 1 {
+		t.Errorf("pool_discovered_members after overwrite: got %v, want 1", got)
 	}
 }

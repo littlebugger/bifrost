@@ -60,7 +60,8 @@ func testCfg(addr string) *config.Config {
 // testServer wires an admin.Server over a real (fast-interval)
 // health.Checker and a fresh balance.Router -- the checker's scheduler
 // is not started; tests that need a live probe call runChecker
-// themselves.
+// themselves. ReloadFunc is nil: nothing built here exercises POST
+// /reload (write_test.go's loadedServer does, with a real one).
 func testServer(t *testing.T, cfg *config.Config) (*Server, *health.Checker, *balance.Router) {
 	t.Helper()
 	holder := &config.Holder{}
@@ -68,7 +69,7 @@ func testServer(t *testing.T, cfg *config.Config) (*Server, *health.Checker, *ba
 	checker := health.New(holder, nil, nil)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(1)))
 	m := metrics.New()
-	return New("", holder, checker, router, m, nil), checker, router
+	return New(holder, checker, router, m, nil, nil), checker, router
 }
 
 // runChecker starts checker.Run in the background and returns a stop
@@ -175,6 +176,57 @@ func TestServersEndpoint(t *testing.T) {
 	}
 	if lp["level"] != "connect" || lp["result"] != "fail" || lp["detail"] != "connect-refused" {
 		t.Errorf("last_probe = %#v, want {level:connect result:fail detail:connect-refused}", lp)
+	}
+}
+
+// TestServersEndpointDiscoveredField: GET /servers rows for a DNS-
+// discovered member (config.Server.DNSTemplate set by ExpandDNS) carry
+// "discovered":true and "template":"<name>"; a static server's row
+// carries neither (design doc's Observability section).
+func TestServersEndpointDiscoveredField(t *testing.T) {
+	cfg := &config.Config{
+		Pools: []config.Pool{{
+			Name: "p",
+			Servers: []config.Server{
+				{Name: "static-extra", Address: closedAddr(t), Weight: 1},
+				{Name: "node-192.0.2.2", Address: closedAddr(t), Weight: 1, DNSTemplate: "node"},
+			},
+		}},
+	}
+	s, _, _ := testServer(t, cfg)
+
+	_, body := getJSON(t, s.Handler(), "/servers")
+	servers, ok := body["servers"].([]any)
+	if !ok || len(servers) != 2 {
+		t.Fatalf("servers = %#v, want exactly two entries", body["servers"])
+	}
+
+	var static, member map[string]any
+	for _, raw := range servers {
+		row := raw.(map[string]any)
+		switch row["server"] {
+		case "static-extra":
+			static = row
+		case "node-192.0.2.2":
+			member = row
+		}
+	}
+	if static == nil || member == nil {
+		t.Fatalf("servers = %#v, want rows for both static-extra and node-192.0.2.2", servers)
+	}
+
+	if _, present := static["discovered"]; present {
+		t.Errorf("static server row has %q, want it absent: %#v", "discovered", static)
+	}
+	if _, present := static["template"]; present {
+		t.Errorf("static server row has %q, want it absent: %#v", "template", static)
+	}
+
+	if member["discovered"] != true {
+		t.Errorf("member row discovered = %v, want true", member["discovered"])
+	}
+	if member["template"] != "node" {
+		t.Errorf("member row template = %v, want %q", member["template"], "node")
 	}
 }
 
