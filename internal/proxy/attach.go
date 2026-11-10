@@ -286,6 +286,7 @@ func (t *txn) meta(mailLine []byte) TxnMeta {
 		ClientIP:       t.tx.ClientIP,
 		Helo:           t.tx.Helo,
 		MailFromDomain: mailFromDomain(mailLine),
+		Listener:       listenerName(t.tx.lst),
 	}
 }
 
@@ -296,11 +297,11 @@ func (t *txn) dialOpts(pool *config.Pool) backend.Opts {
 	opts := backend.Opts{
 		EhloName:     pool.EhloName,
 		TLSMode:      pool.BackendTLS,
-		RequiredCaps: t.cfg.Listener.Capabilities,
+		RequiredCaps: t.tx.lst.Capabilities,
 		Timeouts:     t.timeouts(),
 	}
 	if opts.EhloName == "" {
-		opts.EhloName = t.cfg.Listener.Hostname
+		opts.EhloName = t.tx.lst.Hostname
 	}
 	if pool.Auth != nil {
 		opts.AuthUsername, opts.AuthPassword = pool.Auth.Username, pool.Auth.Password

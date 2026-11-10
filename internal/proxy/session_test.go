@@ -25,10 +25,10 @@ import (
 // capability set, no TLS. STARTTLS cases build on it in starttls_test.go.
 func testConfig() *config.Config {
 	return &config.Config{
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "SIZE 10485760"},
-		},
+		}},
 	}
 }
 
@@ -96,10 +96,13 @@ func (c *testClient) wait() error {
 
 // startSession runs a Session over the server half of a connection pair
 // and returns the client half. Run's error is available on done; the
-// session is torn down (and its return awaited) by t.Cleanup.
-func startSession(ctx context.Context, t *testing.T, cfg *config.Config, tlsCfg *tls.Config, h TxnHandler, srv, cli net.Conn) *testClient {
+// session is torn down (and its return awaited) by t.Cleanup. lst is the
+// listener the session is told it arrived on (Session.lst) — every
+// wrapper below defaults it to cfg.PrimaryListener() except
+// newTestClientListener, which lets a test pick a specific one.
+func startSession(ctx context.Context, t *testing.T, cfg *config.Config, lst *config.Listener, tlsCfg *tls.Config, h TxnHandler, srv, cli net.Conn) *testClient {
 	t.Helper()
-	s := NewSession(srv, cfg, tlsCfg, h, slog.New(slog.DiscardHandler))
+	s := NewSession(srv, cfg, lst, tlsCfg, h, slog.New(slog.DiscardHandler))
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
 
@@ -123,7 +126,17 @@ func newTestClient(t *testing.T, cfg *config.Config, tlsCfg *tls.Config, h TxnHa
 func newTestClientCtx(ctx context.Context, t *testing.T, cfg *config.Config, tlsCfg *tls.Config, h TxnHandler) *testClient {
 	t.Helper()
 	srv, cli := net.Pipe()
-	return startSession(ctx, t, cfg, tlsCfg, h, srv, cli)
+	return startSession(ctx, t, cfg, cfg.PrimaryListener(), tlsCfg, h, srv, cli)
+}
+
+// newTestClientListener is newTestClient for a cfg carrying more than one
+// listener: lst picks which one the session is told it arrived on, so a
+// test can prove two listeners on the same cfg behave independently
+// (banners, capabilities, auth stores).
+func newTestClientListener(t *testing.T, cfg *config.Config, lst *config.Listener, tlsCfg *tls.Config, h TxnHandler) *testClient {
+	t.Helper()
+	srv, cli := net.Pipe()
+	return startSession(context.Background(), t, cfg, lst, tlsCfg, h, srv, cli)
 }
 
 // newTCPTestClient starts a session over a real loopback TCP pair, for
@@ -154,7 +167,7 @@ func newTCPTestClient(t *testing.T, cfg *config.Config, tlsCfg *tls.Config, h Tx
 	if got.err != nil {
 		t.Fatalf("accept: %v", got.err)
 	}
-	return startSession(context.Background(), t, cfg, tlsCfg, h, got.conn, cli)
+	return startSession(context.Background(), t, cfg, cfg.PrimaryListener(), tlsCfg, h, got.conn, cli)
 }
 
 func (c *testClient) send(line string) {
@@ -390,6 +403,65 @@ func TestClientHangupAfterQuit(t *testing.T) {
 	if err := c.wait(); err != nil {
 		t.Fatalf("Run = %v, want nil for a client hangup", err)
 	}
+}
+
+// twoListenerConfig is one cfg with two independent listeners: different
+// hostnames, capability sets, and auth stores — exactly what a session
+// bound to one or the other must never bleed across (Task 3's own
+// multi-listener isolation requirement).
+func twoListenerConfig() *config.Config {
+	return &config.Config{
+		Listeners: []config.Listener{
+			{
+				Name:         "a",
+				Hostname:     "a.bifrost.test",
+				Capabilities: []string{"PIPELINING", "8BITMIME"},
+				Auth: &config.ListenerAuth{
+					AllowCleartext: true,
+					Users:          []config.AuthUser{testAuthUser("alice", "s1", "pw")},
+				},
+			},
+			{
+				Name:         "b",
+				Hostname:     "b.bifrost.test",
+				Capabilities: []string{"SIZE 10485760"},
+				Auth: &config.ListenerAuth{
+					AllowCleartext: true,
+					Users:          []config.AuthUser{testAuthUser("bob", "s2", "pw")},
+				},
+			},
+		},
+	}
+}
+
+// TestTwoListenersAreIsolated proves a session's listener-derived state
+// (banner/EHLO hostname and capability set, the AUTH user store) comes
+// from the arriving listener, not some process-wide default: two sessions
+// on the same cfg, bound to listener A and B respectively, see different
+// banners and capabilities, and a credential valid on A's auth store is
+// unknown to B's and gets 535 there.
+func TestTwoListenersAreIsolated(t *testing.T) {
+	cfg := twoListenerConfig()
+	lstA, lstB := &cfg.Listeners[0], &cfg.Listeners[1]
+
+	a := newTestClientListener(t, cfg, lstA, nil, &stubHandler{})
+	a.expect("220 a.bifrost.test ESMTP")
+	a.send("EHLO client.example")
+	a.expect("250-a.bifrost.test", "250-PIPELINING", "250-8BITMIME", "250 AUTH PLAIN")
+
+	b := newTestClientListener(t, cfg, lstB, nil, &stubHandler{})
+	b.expect("220 b.bifrost.test ESMTP")
+	b.send("EHLO client.example")
+	b.expect("250-b.bifrost.test", "250-SIZE 10485760", "250 AUTH PLAIN")
+
+	// alice is valid on A's own auth store ...
+	a.send("AUTH PLAIN " + authPlainPayload("alice", "pw"))
+	a.expect("235 2.7.0 Authentication succeeded")
+
+	// ... but B has a different store entirely: the same credentials are
+	// simply unknown to it, 535, not a cross-listener hit.
+	b.send("AUTH PLAIN " + authPlainPayload("alice", "pw"))
+	b.expect("535 5.7.8 Authentication credentials invalid")
 }
 
 func TestDrainGoodbye421(t *testing.T) {

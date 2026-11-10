@@ -35,6 +35,7 @@ var rfc5321Floors = map[string]time.Duration{
 func (c *Config) Validate() hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	diags = append(diags, c.validateListenerCount()...)
+	diags = append(diags, c.validateListenerIdentity()...)
 	diags = append(diags, c.validateListenerContent()...)
 	diags = append(diags, c.validateStartTLSFiles()...)
 	diags = append(diags, c.validateListenerAuth()...)
@@ -132,21 +133,50 @@ func fallbackRange(rng, alt hcl.Range) hcl.Range {
 	return rng
 }
 
-// validateListenerCount enforces "exactly one listener block" (D: v1
-// supports a single listener). It reads Config.listenerRanges rather than
-// len(Config.Pools)-style counting because conversion already collapses
-// to a single Listener value; this is the one place that needs to know
-// how many blocks actually existed in the source.
+// validateListenerCount enforces "at least one listener block". Multiple
+// listener blocks are themselves valid (see validateListenerIdentity for
+// the rules that come with more than one).
 func (c *Config) validateListenerCount() hcl.Diagnostics {
-	switch len(c.listenerRanges) {
-	case 0:
-		return hcl.Diagnostics{errDiag(c.fileRange, "Missing listener block", "Bifrost requires exactly one listener block; none was found.")}
-	case 1:
-		return nil
-	default:
-		return hcl.Diagnostics{errDiag(c.listenerRanges[1], "Multiple listener blocks",
-			fmt.Sprintf("only one listener is supported in v1; another was already defined at %s.", c.listenerRanges[0]))}
+	if len(c.Listeners) == 0 {
+		return hcl.Diagnostics{errDiag(c.fileRange, "Missing listener block", "Bifrost requires at least one listener block; none was found.")}
 	}
+	return nil
+}
+
+// validateListenerIdentity enforces the rules that only matter once more
+// than one listener block is configured: every block needs a label the
+// moment there is more than one (a lone unlabeled block is fine — it gets
+// the implicit "default" name, see rawFile.convert), and names/binds must
+// each be unique across the set.
+func (c *Config) validateListenerIdentity() hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	if len(c.Listeners) > 1 {
+		for _, l := range c.Listeners {
+			if l.Name == "" {
+				diags = append(diags, errDiag(fallbackRange(l.rng, c.fileRange), "listener blocks require labels",
+					"more than one listener block is configured; every listener block must have a label (e.g. listener \"name\" { ... }) once there is more than one."))
+			}
+		}
+	}
+
+	seenName := map[string]bool{}
+	seenBind := map[string]bool{}
+	for _, l := range c.Listeners {
+		rng := fallbackRange(l.rng, c.fileRange)
+		if l.Name != "" {
+			if seenName[l.Name] {
+				diags = append(diags, errDiag(rng, "duplicate listener name", fmt.Sprintf("listener %q is already defined.", l.Name)))
+			}
+			seenName[l.Name] = true
+		}
+		if l.Bind != "" {
+			if seenBind[l.Bind] {
+				diags = append(diags, errDiag(rng, "duplicate listener bind", fmt.Sprintf("bind %q is already used by another listener.", l.Bind)))
+			}
+			seenBind[l.Bind] = true
+		}
+	}
+	return diags
 }
 
 // controlCharIndex returns the index of the first ASCII control
@@ -159,36 +189,44 @@ func controlCharIndex(s string) int {
 	})
 }
 
-// validateListenerContent checks the advertised capability list: no
-// control characters in anything that reaches the wire, SIZE must carry
-// a value, SMTPUTF8 requires 8BITMIME per RFC 6531, and STARTTLS may
-// only be advertised when a certificate is configured.
+// validateListenerContent checks every listener's advertised capability
+// list: no control characters in anything that reaches the wire, SIZE
+// must carry a value, SMTPUTF8 requires 8BITMIME per RFC 6531, and
+// STARTTLS may only be advertised when a certificate is configured.
 func (c *Config) validateListenerContent() hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, l := range c.Listeners {
+		diags = append(diags, validateOneListenerContent(l)...)
+	}
+	return diags
+}
+
+func validateOneListenerContent(l Listener) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	var hasSMTPUTF8, has8BitMIME bool
 
-	if i := controlCharIndex(c.Listener.Hostname); i >= 0 {
-		diags = append(diags, errDiag(fallbackRange(c.Listener.hostnameRange, c.Listener.rng),
+	if i := controlCharIndex(l.Hostname); i >= 0 {
+		diags = append(diags, errDiag(fallbackRange(l.hostnameRange, l.rng),
 			"Control character in hostname",
-			fmt.Sprintf("hostname %q contains a control character at byte %d; it is written verbatim into the banner and EHLO reply.", c.Listener.Hostname, i)))
+			fmt.Sprintf("hostname %q contains a control character at byte %d; it is written verbatim into the banner and EHLO reply.", l.Hostname, i)))
 	}
-	for _, capa := range c.Listener.Capabilities {
+	for _, capa := range l.Capabilities {
 		if i := controlCharIndex(capa); i >= 0 {
-			diags = append(diags, errDiag(fallbackRange(c.Listener.capabilitiesRange, c.Listener.rng),
+			diags = append(diags, errDiag(fallbackRange(l.capabilitiesRange, l.rng),
 				"Control character in capability",
 				fmt.Sprintf("capability %q contains a control character at byte %d; it is written verbatim into the EHLO reply.", capa, i)))
 		}
-		if strings.EqualFold(strings.TrimSpace(capa), capStartTLS) && c.Listener.StartTLS == nil {
-			diags = append(diags, errDiag(fallbackRange(c.Listener.capabilitiesRange, c.Listener.rng),
+		if strings.EqualFold(strings.TrimSpace(capa), capStartTLS) && l.StartTLS == nil {
+			diags = append(diags, errDiag(fallbackRange(l.capabilitiesRange, l.rng),
 				"STARTTLS advertised without a certificate",
 				"the listener advertises STARTTLS but has no starttls block; add cert/key or drop the capability."))
 		}
 	}
 
-	for _, capa := range c.Listener.Capabilities {
+	for _, capa := range l.Capabilities {
 		switch strings.TrimSpace(capa) {
 		case "SIZE":
-			diags = append(diags, errDiag(c.Listener.rng, "SIZE capability without a value",
+			diags = append(diags, errDiag(l.rng, "SIZE capability without a value",
 				`"SIZE" must include a byte-count value, e.g. "SIZE 10485760".`))
 		case "SMTPUTF8":
 			hasSMTPUTF8 = true
@@ -197,22 +235,30 @@ func (c *Config) validateListenerContent() hcl.Diagnostics {
 		}
 	}
 	if hasSMTPUTF8 && !has8BitMIME {
-		diags = append(diags, errDiag(c.Listener.rng, "SMTPUTF8 without 8BITMIME",
+		diags = append(diags, errDiag(l.rng, "SMTPUTF8 without 8BITMIME",
 			"RFC 6531 requires 8BITMIME whenever SMTPUTF8 is advertised."))
 	}
 	return diags
 }
 
-// validateStartTLSFiles checks the listener's starttls block: the
+// validateStartTLSFiles checks each listener's starttls block: the
 // min_version enum, and that the cert and key are actually readable from
 // disk. Paths are already resolved relative to the config file's directory
 // by the time Validate runs (see resolveFilePaths in load.go).
 func (c *Config) validateStartTLSFiles() hcl.Diagnostics {
-	if c.Listener.StartTLS == nil {
+	var diags hcl.Diagnostics
+	for _, l := range c.Listeners {
+		diags = append(diags, validateOneListenerStartTLS(l)...)
+	}
+	return diags
+}
+
+func validateOneListenerStartTLS(l Listener) hcl.Diagnostics {
+	if l.StartTLS == nil {
 		return nil
 	}
 	var diags hcl.Diagnostics
-	st := c.Listener.StartTLS
+	st := l.StartTLS
 	if st.MinVersion != "" && !validEnum(st.MinVersion, "1.0", "1.1", "1.2", "1.3") {
 		// Rejected, never silently downgraded: an unrecognized value here
 		// would otherwise fall back to the built-in minimum, which is the
@@ -229,7 +275,7 @@ func (c *Config) validateStartTLSFiles() hcl.Diagnostics {
 	return diags
 }
 
-// validateListenerAuth checks the listener's client-leg SMTP AUTH block.
+// validateListenerAuth checks each listener's client-leg SMTP AUTH block.
 // A non-nil Listener.Auth is a guarantee the rest of the codebase relies
 // on: STARTTLS must be configured (credentials must never cross the wire
 // before TLS) unless AllowCleartext opts out for a network-layer-secured
@@ -239,13 +285,21 @@ func (c *Config) validateStartTLSFiles() hcl.Diagnostics {
 // hostname/capability injection) so no credential field can smuggle a
 // NUL or CRLF into whatever later reads it verbatim.
 func (c *Config) validateListenerAuth() hcl.Diagnostics {
-	auth := c.Listener.Auth
+	var diags hcl.Diagnostics
+	for _, l := range c.Listeners {
+		diags = append(diags, validateOneListenerAuth(l)...)
+	}
+	return diags
+}
+
+func validateOneListenerAuth(l Listener) hcl.Diagnostics {
+	auth := l.Auth
 	if auth == nil {
 		return nil
 	}
 	var diags hcl.Diagnostics
-	if c.Listener.StartTLS == nil && !auth.AllowCleartext {
-		diags = append(diags, errDiag(fallbackRange(auth.rng, c.Listener.rng),
+	if l.StartTLS == nil && !auth.AllowCleartext {
+		diags = append(diags, errDiag(fallbackRange(auth.rng, l.rng),
 			"client auth requires starttls",
 			"listener.auth is configured but the listener has no starttls block; client credentials must never be sent before TLS."))
 	}
@@ -527,6 +581,10 @@ func (c *Config) validateRouting() hcl.Diagnostics {
 	for _, p := range c.Pools {
 		poolNames[p.Name] = true
 	}
+	listenerNames := map[string]bool{}
+	for _, l := range c.Listeners {
+		listenerNames[l.Name] = true
+	}
 
 	for _, rule := range c.Routing.Rules {
 		if rule.Pool != "" && !poolNames[rule.Pool] {
@@ -541,6 +599,11 @@ func (c *Config) validateRouting() hcl.Diagnostics {
 			if strings.Contains(domain, "*") && !isWildcardSuffix(domain) {
 				diags = append(diags, errDiag(rule.rng, "Invalid mail_from_domain wildcard",
 					fmt.Sprintf("%q must be a literal domain or a \"*.suffix\" wildcard.", domain)))
+			}
+		}
+		for _, name := range rule.Listener {
+			if !listenerNames[name] {
+				diags = append(diags, errDiag(rule.rng, "routing rule references unknown listener", fmt.Sprintf("listener %q is not defined.", name)))
 			}
 		}
 	}

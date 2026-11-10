@@ -131,10 +131,10 @@ func startDNSBackends(t *testing.T, port string, scriptA, scriptB fakesmtp.Scrip
 func dnsConfig(port string, reuseEnvelopes int) *config.Config {
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "SIZE 104857600"},
-		},
+		}},
 		Pools: []config.Pool{{
 			Name: "routes", Balance: "roundrobin", BackendTLS: "none", EhloName: "bifrost.test",
 			ReuseEnvelopes: reuseEnvelopes,

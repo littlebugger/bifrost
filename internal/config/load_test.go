@@ -20,6 +20,15 @@ func findDiag(diags hcl.Diagnostics, substr string) *hcl.Diagnostic {
 	return nil
 }
 
+func listenerNamed(listeners []Listener, name string) *Listener {
+	for i := range listeners {
+		if listeners[i].Name == name {
+			return &listeners[i]
+		}
+	}
+	return nil
+}
+
 func poolNamed(pools []Pool, name string) *Pool {
 	for i := range pools {
 		if pools[i].Name == name {
@@ -98,24 +107,27 @@ func TestLoadExample(t *testing.T) {
 		t.Errorf("Defaults.Check timings = %+v, want interval=5s down_interval=15s timeout=5s", cfg.Defaults.Check)
 	}
 
-	if cfg.Listener.Bind != "0.0.0.0:25" || cfg.Listener.Hostname != "mail.example.com" {
-		t.Errorf("Listener = %+v, want bind=0.0.0.0:25 hostname=mail.example.com", cfg.Listener)
+	if cfg.PrimaryListener().Name != "default" {
+		t.Errorf("Listener.Name = %q, want %q for a single unlabeled listener block", cfg.PrimaryListener().Name, "default")
 	}
-	if cfg.Listener.StartTLS == nil {
+	if cfg.PrimaryListener().Bind != "0.0.0.0:25" || cfg.PrimaryListener().Hostname != "mail.example.com" {
+		t.Errorf("Listener = %+v, want bind=0.0.0.0:25 hostname=mail.example.com", cfg.PrimaryListener())
+	}
+	if cfg.PrimaryListener().StartTLS == nil {
 		t.Fatalf("Listener.StartTLS = nil, want a starttls block")
 	}
-	if !strings.HasSuffix(cfg.Listener.StartTLS.Cert, "examples/server.crt") {
-		t.Errorf("StartTLS.Cert = %q, want it resolved under examples/", cfg.Listener.StartTLS.Cert)
+	if !strings.HasSuffix(cfg.PrimaryListener().StartTLS.Cert, "examples/server.crt") {
+		t.Errorf("StartTLS.Cert = %q, want it resolved under examples/", cfg.PrimaryListener().StartTLS.Cert)
 	}
-	if !strings.HasSuffix(cfg.Listener.StartTLS.Key, "examples/server.key") {
-		t.Errorf("StartTLS.Key = %q, want it resolved under examples/", cfg.Listener.StartTLS.Key)
+	if !strings.HasSuffix(cfg.PrimaryListener().StartTLS.Key, "examples/server.key") {
+		t.Errorf("StartTLS.Key = %q, want it resolved under examples/", cfg.PrimaryListener().StartTLS.Key)
 	}
-	if cfg.Listener.StartTLS.MinVersion != "1.2" {
-		t.Errorf("StartTLS.MinVersion = %q, want 1.2", cfg.Listener.StartTLS.MinVersion)
+	if cfg.PrimaryListener().StartTLS.MinVersion != "1.2" {
+		t.Errorf("StartTLS.MinVersion = %q, want 1.2", cfg.PrimaryListener().StartTLS.MinVersion)
 	}
 	wantCaps := []string{"PIPELINING", "8BITMIME", "SIZE 10485760", "STARTTLS"}
-	if strings.Join(cfg.Listener.Capabilities, ",") != strings.Join(wantCaps, ",") {
-		t.Errorf("Listener.Capabilities = %v, want %v", cfg.Listener.Capabilities, wantCaps)
+	if strings.Join(cfg.PrimaryListener().Capabilities, ",") != strings.Join(wantCaps, ",") {
+		t.Errorf("Listener.Capabilities = %v, want %v", cfg.PrimaryListener().Capabilities, wantCaps)
 	}
 
 	if len(cfg.Pools) != 2 {
@@ -195,7 +207,7 @@ func TestLoadExample(t *testing.T) {
 
 func TestLoadAuth(t *testing.T) {
 	cfg := mustLoad(t, "testdata/auth.hcl")
-	la := cfg.Listener.Auth
+	la := cfg.PrimaryListener().Auth
 	if la == nil || len(la.Users) != 1 {
 		t.Fatalf("Listener.Auth = %+v, want 1 user", la)
 	}
@@ -228,8 +240,8 @@ func TestLoadAuth(t *testing.T) {
 // loading clean at all proves both guards were actually lifted.
 func TestLoadAuthCleartext(t *testing.T) {
 	cfg := mustLoad(t, "testdata/auth-cleartext.hcl")
-	if cfg.Listener.Auth == nil || !cfg.Listener.Auth.AllowCleartext {
-		t.Fatalf("Listener.Auth = %+v, want AllowCleartext = true", cfg.Listener.Auth)
+	if cfg.PrimaryListener().Auth == nil || !cfg.PrimaryListener().Auth.AllowCleartext {
+		t.Fatalf("Listener.Auth = %+v, want AllowCleartext = true", cfg.PrimaryListener().Auth)
 	}
 	outgoing := poolNamed(cfg.Pools, "outgoing")
 	if outgoing == nil || outgoing.Auth == nil || !outgoing.Auth.AllowCleartext {
@@ -240,6 +252,51 @@ func TestLoadAuthCleartext(t *testing.T) {
 	}
 	if len(outgoing.Servers) == 0 || !outgoing.Servers[0].Check.AuthAllowCleartext {
 		t.Errorf("server Check.AuthAllowCleartext = false, want true")
+	}
+}
+
+// TestLoadMultiListener proves two labeled listener blocks decode as
+// distinct Config.Listeners entries (rather than gohcl rejecting the
+// second as an unexpected duplicate block, or silently overwriting the
+// first), each keeping its own fields, and that a routing rule's
+// listener attribute decodes as the matching listener names (Task 2
+// makes that list drive actual routing; this only proves the decode).
+func TestLoadMultiListener(t *testing.T) {
+	cfg := mustLoad(t, "testdata/multi-listener.hcl")
+	if len(cfg.Listeners) != 2 {
+		t.Fatalf("len(Listeners) = %d, want 2", len(cfg.Listeners))
+	}
+
+	transactional := listenerNamed(cfg.Listeners, "transactional")
+	if transactional == nil {
+		t.Fatalf("no listener named %q", "transactional")
+	}
+	if transactional.Hostname != "transactional.bifrost.test" {
+		t.Errorf("transactional.Hostname = %q, want %q", transactional.Hostname, "transactional.bifrost.test")
+	}
+	if transactional.Auth != nil {
+		t.Errorf("transactional.Auth = %+v, want nil", transactional.Auth)
+	}
+
+	bulk := listenerNamed(cfg.Listeners, "bulk")
+	if bulk == nil {
+		t.Fatalf("no listener named %q", "bulk")
+	}
+	if bulk.Hostname != "bulk.bifrost.test" {
+		t.Errorf("bulk.Hostname = %q, want %q", bulk.Hostname, "bulk.bifrost.test")
+	}
+	if bulk.StartTLS == nil {
+		t.Fatalf("bulk.StartTLS = nil, want the fixture's cert/key")
+	}
+	if bulk.Auth == nil || len(bulk.Auth.Users) != 1 {
+		t.Fatalf("bulk.Auth = %+v, want 1 user", bulk.Auth)
+	}
+
+	if len(cfg.Routing.Rules) != 1 {
+		t.Fatalf("len(Routing.Rules) = %d, want 1", len(cfg.Routing.Rules))
+	}
+	if want := []string{"bulk"}; !reflect.DeepEqual(cfg.Routing.Rules[0].Listener, want) {
+		t.Errorf("Routing.Rules[0].Listener = %v, want %v", cfg.Routing.Rules[0].Listener, want)
 	}
 }
 
@@ -338,6 +395,33 @@ func TestLoadUnknownAttribute(t *testing.T) {
 		t.Fatalf("diagnostic %v has no Subject range", d)
 	}
 	const wantLine = 6
+	if d.Subject.Start.Line != wantLine {
+		t.Errorf("diagnostic line = %d, want %d (%v)", d.Subject.Start.Line, wantLine, d)
+	}
+}
+
+// TestLoadListenerTwoLabels pins decodeListeners' label-count check
+// (load.go): a listener block takes at most one label (its name), the
+// same hard decode-time failure shape as TestLoadUnknownAttribute/
+// TestLoadMissingRequired above, not a soft Validate-stage warning —
+// silently keeping only the first label and dropping the rest would be
+// exactly the kind of surprise this rejects outright instead.
+func TestLoadListenerTwoLabels(t *testing.T) {
+	cfg, diags := Load("testdata/bad-listener-two-labels.hcl")
+	if !diags.HasErrors() {
+		t.Fatalf("Load(bad-listener-two-labels.hcl) diags = %v, want an error", diags)
+	}
+	if cfg != nil {
+		t.Errorf("Load(bad-listener-two-labels.hcl) cfg = %+v, want nil on error", cfg)
+	}
+	d := findDiag(diags, "listener block takes at most one label")
+	if d == nil {
+		t.Fatalf("diags = %v, want one mentioning %q", diags, "listener block takes at most one label")
+	}
+	if d.Subject == nil {
+		t.Fatalf("diagnostic %v has no Subject range", d)
+	}
+	const wantLine = 1
 	if d.Subject.Start.Line != wantLine {
 		t.Errorf("diagnostic line = %d, want %d (%v)", d.Subject.Start.Line, wantLine, d)
 	}

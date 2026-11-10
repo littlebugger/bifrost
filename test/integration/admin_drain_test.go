@@ -52,10 +52,10 @@ func drainConfig(addrA, addrB string) *config.Config {
 		})
 	}
 	return &config.Config{
-		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{Hostname: "bifrost.test", Capabilities: []string{"PIPELINING", "8BITMIME"}},
-		Pools:    []config.Pool{pool},
-		Routing:  config.Routing{DefaultPool: "p"},
+		Defaults:  config.Defaults{Timeouts: m1Timeouts()},
+		Listeners: []config.Listener{{Hostname: "bifrost.test", Capabilities: []string{"PIPELINING", "8BITMIME"}}},
+		Pools:     []config.Pool{pool},
+		Routing:   config.Routing{DefaultPool: "p"},
 	}
 }
 

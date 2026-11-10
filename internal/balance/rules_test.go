@@ -16,6 +16,10 @@ func rule(pool string, cidrs, domains []string) config.RoutingRule {
 	return config.RoutingRule{ClientCIDR: cidrs, MailFromDomain: domains, Pool: pool}
 }
 
+func ruleWithListener(pool string, cidrs, domains, listeners []string) config.RoutingRule {
+	return config.RoutingRule{ClientCIDR: cidrs, MailFromDomain: domains, Listener: listeners, Pool: pool}
+}
+
 // TestRuleFirstMatchWins: an earlier rule that matches shadows a later
 // one that would also have matched.
 func TestRuleFirstMatchWins(t *testing.T) {
@@ -165,6 +169,104 @@ func TestRuleEmptyMailFrom(t *testing.T) {
 		tx := proxy.TxnMeta{ClientIP: netip.MustParseAddr("10.1.2.3"), MailFromDomain: ""}
 		if got := MatchPool(r, tx); got != "matched" {
 			t.Errorf("MatchPool = %q, want %q (no domain key in this rule to fail)", got, "matched")
+		}
+	})
+}
+
+// TestRuleListener: listener-only matching, AND semantics with CIDR/Domain,
+// empty listener key matches any listener, first-match ordering.
+func TestRuleListener(t *testing.T) {
+	t.Run("listener-only rule matches by name", func(t *testing.T) {
+		r := routing("default", ruleWithListener("matched", nil, nil, []string{"smtp"}))
+		tx := proxy.TxnMeta{Listener: "smtp"}
+		if got := MatchPool(r, tx); got != "matched" {
+			t.Errorf("MatchPool(listener=smtp) = %q, want %q", got, "matched")
+		}
+	})
+
+	t.Run("listener-only rule skips mismatched listener", func(t *testing.T) {
+		r := routing("default", ruleWithListener("matched", nil, nil, []string{"smtp"}))
+		tx := proxy.TxnMeta{Listener: "submission"}
+		if got := MatchPool(r, tx); got != "default" {
+			t.Errorf("MatchPool(listener=submission) = %q, want %q", got, "default")
+		}
+	})
+
+	t.Run("listener key with multiple listeners", func(t *testing.T) {
+		r := routing("default", ruleWithListener("matched", nil, nil, []string{"smtp", "submission"}))
+		tx := proxy.TxnMeta{Listener: "submission"}
+		if got := MatchPool(r, tx); got != "matched" {
+			t.Errorf("MatchPool(listener=submission in [smtp, submission]) = %q, want %q", got, "matched")
+		}
+	})
+
+	t.Run("empty listener key matches any listener", func(t *testing.T) {
+		r := routing("default", ruleWithListener("matched", nil, nil, nil))
+		tx := proxy.TxnMeta{Listener: "any-listener"}
+		if got := MatchPool(r, tx); got != "matched" {
+			t.Errorf("MatchPool(empty listener key) = %q, want %q", got, "matched")
+		}
+	})
+
+	t.Run("listener AND CIDR both required", func(t *testing.T) {
+		r := routing("default", ruleWithListener("matched", []string{"10.0.0.0/8"}, nil, []string{"smtp"}))
+		inCIDR := netip.MustParseAddr("10.1.2.3")
+		outCIDR := netip.MustParseAddr("192.168.1.1")
+
+		tests := []struct {
+			name     string
+			ip       netip.Addr
+			listener string
+			want     string
+		}{
+			{"both match", inCIDR, "smtp", "matched"},
+			{"only CIDR matches", inCIDR, "submission", "default"},
+			{"only listener matches", outCIDR, "smtp", "default"},
+			{"neither matches", outCIDR, "submission", "default"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				tx := proxy.TxnMeta{ClientIP: tc.ip, Listener: tc.listener}
+				if got := MatchPool(r, tx); got != tc.want {
+					t.Errorf("MatchPool = %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("listener AND Domain both required", func(t *testing.T) {
+		r := routing("default", ruleWithListener("matched", nil, []string{"a.com"}, []string{"smtp"}))
+
+		tests := []struct {
+			name     string
+			domain   string
+			listener string
+			want     string
+		}{
+			{"both match", "a.com", "smtp", "matched"},
+			{"only domain matches", "a.com", "submission", "default"},
+			{"only listener matches", "b.com", "smtp", "default"},
+			{"neither matches", "b.com", "submission", "default"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				tx := proxy.TxnMeta{MailFromDomain: tc.domain, Listener: tc.listener}
+				if got := MatchPool(r, tx); got != tc.want {
+					t.Errorf("MatchPool = %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("first-match ordering with listener rules", func(t *testing.T) {
+		// Two rules both matching on listener; first wins.
+		r := routing("default",
+			ruleWithListener("first", nil, nil, []string{"smtp"}),
+			ruleWithListener("second", nil, nil, []string{"smtp"}),
+		)
+		tx := proxy.TxnMeta{Listener: "smtp"}
+		if got := MatchPool(r, tx); got != "first" {
+			t.Errorf("MatchPool(first-match on listener) = %q, want %q", got, "first")
 		}
 	})
 }

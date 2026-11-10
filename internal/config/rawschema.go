@@ -13,12 +13,20 @@ import "github.com/hashicorp/hcl/v2"
 // one (e.g. listener), so that Validate — not gohcl — produces the
 // operator-facing diagnostic for those cases, anchored at a precise range.
 type rawFile struct {
-	Defaults  *rawDefaults  `hcl:"defaults,block"`
-	Listeners []rawListener `hcl:"listener,block"`
-	Pools     []rawPool     `hcl:"pool,block"`
-	Routing   rawRouting    `hcl:"routing,block"`
-	Admin     *rawAdmin     `hcl:"admin,block"`
-	Limits    *rawLimits    `hcl:"limits,block"`
+	Defaults *rawDefaults `hcl:"defaults,block"`
+	// Listeners carries no hcl tag: gohcl's `,label` tag enforces one fixed
+	// label count for every block of a type, which cannot express "0
+	// labels when it's the only block, 1+ once there's more than one" (the
+	// backward-compat rule). It is populated separately by
+	// load.go's decodeListeners, reading the native-syntax body directly;
+	// an untagged field like this is simply skipped by gohcl's decode (see
+	// withoutListenerBlocks, which also removes "listener" blocks from
+	// what gohcl sees so it doesn't reject them as unsupported).
+	Listeners []rawListener
+	Pools     []rawPool  `hcl:"pool,block"`
+	Routing   rawRouting `hcl:"routing,block"`
+	Admin     *rawAdmin  `hcl:"admin,block"`
+	Limits    *rawLimits `hcl:"limits,block"`
 }
 
 // rawTimeouts carries an attr_range companion per field (not just the
@@ -94,7 +102,11 @@ type rawStartTLS struct {
 }
 
 type rawListener struct {
-	Range hcl.Range `hcl:",def_range"`
+	// Range and Name carry no hcl tag: they are set by hand in
+	// decodeListeners from the block's own DefRange()/Labels rather than
+	// through gohcl's schema-based decode (see rawFile.Listeners above).
+	Range hcl.Range
+	Name  string
 
 	Bind              string           `hcl:"bind"`
 	Hostname          string           `hcl:"hostname"`
@@ -193,6 +205,7 @@ type rawRule struct {
 
 	ClientCIDR     []string `hcl:"client_cidr,optional"`
 	MailFromDomain []string `hcl:"mail_from_domain,optional"`
+	Listener       []string `hcl:"listener,optional"`
 	Pool           string   `hcl:"pool"`
 }
 

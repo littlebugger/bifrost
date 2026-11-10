@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -16,7 +18,19 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/littlebugger/bifrost/internal/smtpdrv"
 )
+
+// requireContains fails t unless reply's joined lines contain want — the
+// per-listener hostname check TestTwoListenersServeIndependently uses on
+// both the banner and the EHLO reply.
+func requireContains(t *testing.T, reply smtpdrv.Reply, want string) {
+	t.Helper()
+	if !strings.Contains(strings.Join(reply.Lines, "\n"), want) {
+		t.Errorf("reply = %v, want it to contain %q", reply.Lines, want)
+	}
+}
 
 func TestCheckModeOK(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -130,6 +144,331 @@ func TestServeDNSDiscoveryListsMembersAcrossReload(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
 	}
+}
+
+// TestTwoListenersServeIndependently is Task 3's cmd/bifrost proof: a real
+// process, booted from a config with two labeled listener blocks, accepts
+// and serves sessions on both ports at once — not just that wire.go builds
+// two sockets, but that main.go's N accept loops actually run them. Each
+// listener's own hostname shows up in its own banner/EHLO, proving the two
+// aren't secretly sharing one Session path.
+func TestTwoListenersServeIndependently(t *testing.T) {
+	addrA, addrB, adminAddr := freePort(t), freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	if err := os.WriteFile(path, []byte(twoListenerFixture(addrA, addrB, adminAddr)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-f", path}, io.Discard, &stderr) }()
+
+	var stopped atomic.Bool
+	t.Cleanup(func() {
+		if stopped.Load() {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("serve did not exit during cleanup; logs:\n%s", stderr.String())
+		}
+	})
+
+	waitForStatus(t, "http://"+adminAddr+"/healthz", http.StatusOK)
+
+	a := smtpdrv.Dial(t, addrA)
+	requireContains(t, a.Expect("220"), "a.bifrost.test")
+	a.Send("EHLO client.example")
+	requireContains(t, a.Expect("250"), "a.bifrost.test")
+
+	b := smtpdrv.Dial(t, addrB)
+	requireContains(t, b.Expect("220"), "b.bifrost.test")
+	b.Send("EHLO client.example")
+	requireContains(t, b.Expect("250"), "b.bifrost.test")
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	select {
+	case code := <-done:
+		stopped.Store(true)
+		if code != 0 {
+			t.Errorf("run() exit code = %d, want 0; logs:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
+	}
+}
+
+// TestOneListenerStoppingUnexpectedlyFailsProcess proves the per-listener
+// fail-safe restored in main.go's smtp-listener closures: with two
+// listeners running, killing ONE listener's socket directly (no drain, no
+// signal — the way an external fd/fs failure would) must still fail the
+// whole process, even though the other listener is perfectly healthy and
+// serveDone (now an ALL-listeners-returned barrier) would otherwise never
+// fire on its own.
+func TestOneListenerStoppingUnexpectedlyFailsProcess(t *testing.T) {
+	addrA, addrB, adminAddr := freePort(t), freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	if err := os.WriteFile(path, []byte(twoListenerFixture(addrA, addrB, adminAddr)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	appc := make(chan *app, 1)
+	appHook = func(a *app) { appc <- a }
+	t.Cleanup(func() { appHook = nil })
+
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-f", path}, io.Discard, &stderr) }()
+
+	var stopped atomic.Bool
+	t.Cleanup(func() {
+		if stopped.Load() {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("serve did not exit during cleanup; logs:\n%s", stderr.String())
+		}
+	})
+
+	waitForStatus(t, "http://"+adminAddr+"/healthz", http.StatusOK)
+
+	var a *app
+	select {
+	case a = <-appc:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("app never reached appHook")
+	}
+
+	// A healthy session on listener "b", open before "a" dies, to prove
+	// shutdown reaches every listener's sessions, not just the one that
+	// failed.
+	connB, err := net.Dial("tcp", addrB)
+	if err != nil {
+		t.Fatalf("dial listener b: %v", err)
+	}
+	defer func() { _ = connB.Close() }()
+	rb := bufio.NewReader(connB)
+	if banner, err := rb.ReadString('\n'); err != nil || !strings.HasPrefix(banner, "220") {
+		t.Fatalf("banner on listener b = %q, err=%v", banner, err)
+	}
+
+	var lnA net.Listener
+	for _, nl := range a.smtpLns {
+		if nl.name == "a" {
+			lnA = nl.ln
+		}
+	}
+	if lnA == nil {
+		t.Fatalf("listener %q not found in app.smtpLns", "a")
+	}
+	if err := lnA.Close(); err != nil {
+		t.Fatalf("close listener a: %v", err)
+	}
+
+	select {
+	case code := <-done:
+		stopped.Store(true)
+		if code != 1 {
+			t.Errorf("run() exit code = %d, want 1; logs:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("serve did not exit after listener a died; logs:\n%s", stderr.String())
+	}
+
+	if logs := stderr.String(); !strings.Contains(logs, "smtp listener a:") || !strings.Contains(logs, "stopped unexpectedly") {
+		t.Errorf("logs = %s, want a per-listener stopped-unexpectedly error naming %q", logs, "a")
+	}
+
+	waitConnClosed(t, connB, 10*time.Second)
+}
+
+// oneListenerStartTLSFixture is a single STARTTLS listener, labeled with
+// name (empty means unlabeled, which config.Load defaults to "default"),
+// at certPath/keyPath -- the final-review item 2 fixture: a reload can
+// rename this listener without rebinding or re-pointing its certificate.
+func oneListenerStartTLSFixture(name, smtpAddr, adminAddr, certPath, keyPath string) string {
+	label := ""
+	if name != "" {
+		label = fmt.Sprintf("%q ", name)
+	}
+	return fmt.Sprintf(`
+listener %s{
+  bind     = %q
+  hostname = "bifrost.test"
+
+  starttls {
+    cert = %q
+    key  = %q
+  }
+}
+
+pool "p" {
+  balance = "roundrobin"
+  server "mta1" { address = "192.0.2.1:25" }
+}
+
+routing {
+  default_pool = "p"
+}
+
+admin {
+  bind = %q
+}
+`, label, smtpAddr, certPath, keyPath, adminAddr)
+}
+
+// TestReloadRenamedListenerKeepsSTARTTLS is the final-review fix for item
+// 2: wire.go's currentCert looks up a listener's certificate by name in
+// the LIVE holder, but the GetCertificate closure built for the socket is
+// bound to the name that listener had at startup (wire.go's listen/
+// listenerTLS never rebuild it on reload). Renaming the listener here
+// makes listenerNamed(newCfg, "default") return nil, which must self-heal
+// to the cached certificate (with a one-time warning) instead of failing
+// every handshake on the still-open socket while plaintext keeps working.
+func TestReloadRenamedListenerKeepsSTARTTLS(t *testing.T) {
+	certPath, err := filepath.Abs("../../examples/server.crt")
+	if err != nil {
+		t.Fatalf("abs cert path: %v", err)
+	}
+	keyPath, err := filepath.Abs("../../examples/server.key")
+	if err != nil {
+		t.Fatalf("abs key path: %v", err)
+	}
+
+	smtpAddr, adminAddr := freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	if err := os.WriteFile(path, []byte(oneListenerStartTLSFixture("", smtpAddr, adminAddr, certPath, keyPath)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-f", path}, io.Discard, &stderr) }()
+
+	var stopped atomic.Bool
+	t.Cleanup(func() {
+		if stopped.Load() {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("serve did not exit during cleanup; logs:\n%s", stderr.String())
+		}
+	})
+
+	waitForStatus(t, "http://"+adminAddr+"/healthz", http.StatusOK)
+
+	clientTLS := &tls.Config{InsecureSkipVerify: true}
+
+	// Sanity: STARTTLS works under the listener's original name "default",
+	// before any reload.
+	before := smtpdrv.Dial(t, smtpAddr)
+	before.Expect("220")
+	before.Send("EHLO client.example")
+	before.Expect("250")
+	before.StartTLS(clientTLS)
+	before.Send("QUIT")
+	before.Expect("221")
+
+	// Rename the listener and reload: BindChange only rejects an edited
+	// bind, never a rename (a rename is "removed" + "added", each its own
+	// RestartRequired warning, not a rejection).
+	if err := os.WriteFile(path, []byte(oneListenerStartTLSFixture("renamed", smtpAddr, adminAddr, certPath, keyPath)), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+	reloadsBefore := strings.Count(stderr.String(), "config reloaded")
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatalf("SIGHUP: %v", err)
+	}
+	waitForLogCount(t, &stderr, "config reloaded", reloadsBefore+1)
+
+	// The still-open socket must keep answering STARTTLS under its stale
+	// name, not fail every handshake while plaintext keeps working.
+	after := smtpdrv.Dial(t, smtpAddr)
+	after.Expect("220")
+	after.Send("EHLO client.example")
+	after.Expect("250")
+	after.StartTLS(clientTLS)
+	after.Send("QUIT")
+	after.Expect("221")
+
+	if logs := stderr.String(); !strings.Contains(logs, "still-open socket keeps serving the stale certificate") {
+		t.Errorf("logs = %s, want the one-time stale-certificate warning", logs)
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM: %v", err)
+	}
+	select {
+	case code := <-done:
+		stopped.Store(true)
+		if code != 0 {
+			t.Errorf("run() exit code = %d, want 0; logs:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
+	}
+}
+
+// waitConnClosed bounded-polls conn until a read fails (EOF or otherwise)
+// — proof the peer closed it — and fails t if the deadline passes with the
+// connection still open (every successful read is discarded; a drained
+// session may still have a goodbye line queued ahead of the close).
+func waitConnClosed(t *testing.T, conn net.Conn, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	buf := make([]byte, 512)
+	for {
+		_ = conn.SetReadDeadline(deadline)
+		_, err := conn.Read(buf)
+		if err == nil {
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Errorf("connection not closed within %s", d)
+			return
+		}
+		return
+	}
+}
+
+// twoListenerFixture is two labeled listeners ("a", "b"), each with its own
+// hostname, sharing one pool and routing — the smallest config that makes
+// main.go actually run two accept loops.
+func twoListenerFixture(addrA, addrB, adminAddr string) string {
+	return fmt.Sprintf(`
+listener "a" {
+  bind     = %q
+  hostname = "a.bifrost.test"
+}
+
+listener "b" {
+  bind     = %q
+  hostname = "b.bifrost.test"
+}
+
+pool "p" {
+  balance = "roundrobin"
+  server "mta1" { address = "192.0.2.1:25" }
+}
+
+routing {
+  default_pool = "p"
+}
+
+admin {
+  bind = %q
+}
+`, addrA, addrB, adminAddr)
 }
 
 // dnsDiscoveryFixture is the smallest config carrying one server_dns

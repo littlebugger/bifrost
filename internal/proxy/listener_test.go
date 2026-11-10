@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,10 +52,15 @@ func expectClosedConn(t *testing.T, br *bufio.Reader) {
 
 // runServe starts Serve over ln in the background and arranges for
 // ctx's cancellation, then Serve's return, to be joined by t.Cleanup.
-func runServe(t *testing.T, ctx context.Context, cancel context.CancelFunc, ln net.Listener, cfg *config.Config) {
+// active is forwarded to Serve unchanged (nil for a private, per-call
+// counter) so callers proving the shared-counter behavior can pass one
+// shared *atomic.Int64 across two calls.
+func runServe(t *testing.T, ctx context.Context, cancel context.CancelFunc, ln net.Listener, cfg *config.Config, active *atomic.Int64) {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, ln, cfg, nil, &stubHandler{}, slog.New(slog.DiscardHandler)) }()
+	go func() {
+		done <- Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, &stubHandler{}, slog.New(slog.DiscardHandler), active)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -82,7 +88,7 @@ func TestMaxconnBoundary(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 	ctx, cancel := context.WithCancel(context.Background())
-	runServe(t, ctx, cancel, ln, cfg)
+	runServe(t, ctx, cancel, ln, cfg, nil)
 
 	c1, br1 := dialListener(t, addr)
 	if got := readLine(t, br1); got != "220 bifrost.test ESMTP" {
@@ -131,6 +137,88 @@ func TestMaxconnBoundary(t *testing.T) {
 	}
 }
 
+// TestSharedMaxconnAcrossListeners: global_maxconn is a PROCESS cap, not a
+// per-listener one — the final-review fix for item 1 (cmd/bifrost now
+// hoists one *atomic.Int64 out of Serve and hands it to every listener's
+// accept loop). Two Serve calls given the SAME counter, GlobalMaxConn=1:
+// one session open on listener a must still cap listener b, proving the
+// counter is shared rather than each Serve silently keeping its own.
+func TestSharedMaxconnAcrossListeners(t *testing.T) {
+	cfg := testConfig()
+	cfg.Listeners = append(cfg.Listeners, config.Listener{Name: "b", Hostname: "bifrost.test"})
+	cfg.Limits.GlobalMaxConn = 1
+
+	lnA, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen a: %v", err)
+	}
+	lnB, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen b: %v", err)
+	}
+	addrA, addrB := lnA.Addr().String(), lnB.Addr().String()
+
+	var shared atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	doneA, doneB := make(chan error, 1), make(chan error, 1)
+	go func() {
+		doneA <- Serve(ctx, lnA, cfg, &cfg.Listeners[0], nil, &stubHandler{}, slog.New(slog.DiscardHandler), &shared)
+	}()
+	go func() {
+		doneB <- Serve(ctx, lnB, cfg, &cfg.Listeners[1], nil, &stubHandler{}, slog.New(slog.DiscardHandler), &shared)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		for _, done := range []chan error{doneA, doneB} {
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("Serve returned %v, want nil", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Serve did not return after ctx cancel")
+			}
+		}
+	})
+
+	cA, brA := dialListener(t, addrA)
+	if got := readLine(t, brA); got != "220 bifrost.test ESMTP" {
+		t.Fatalf("a banner = %q", got)
+	}
+
+	// a now holds the process's one connection slot: a dial to b -- a
+	// DIFFERENT listener's socket -- must still be refused if the cap is
+	// truly shared rather than per-listener.
+	_, brB := dialListener(t, addrB)
+	if got := readLine(t, brB); got != "421 4.3.2 Too many connections, try again later" {
+		t.Fatalf("b first line while a holds the slot = %q, want the shared-cap overload reply", got)
+	}
+	expectClosedConn(t, brB)
+
+	// Freeing a's slot must admit b.
+	if _, err := cA.Write([]byte("QUIT\r\n")); err != nil {
+		t.Fatalf("a QUIT: %v", err)
+	}
+	if got := readLine(t, brA); got != "221 2.0.0 Bye" {
+		t.Fatalf("a QUIT reply = %q", got)
+	}
+	expectClosedConn(t, brA)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, br := dialListener(t, addrB)
+		got := readLine(t, br)
+		if got == "220 bifrost.test ESMTP" {
+			break
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatalf("b first line = %q, want a fresh banner (slot freed by a's close)", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // flakyListener wraps a real listener and fails the first n Accept
 // calls with a non-fatal, non-net.ErrClosed error, to exercise Serve's
 // accept-error backoff without needing a real EMFILE.
@@ -159,7 +247,7 @@ func TestAcceptErrorBackoff(t *testing.T) {
 	ln := &flakyListener{Listener: real, fails: 3}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runServe(t, ctx, cancel, ln, testConfig())
+	runServe(t, ctx, cancel, ln, testConfig(), nil)
 
 	// The kernel completes the handshake into the listen backlog
 	// independently of when Serve's Accept actually runs, so this dial
@@ -190,9 +278,12 @@ func TestServeStopsOnCtxCancel(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 
+	cfg := testConfig()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, ln, testConfig(), nil, &stubHandler{}, slog.New(slog.DiscardHandler)) }()
+	go func() {
+		done <- Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, &stubHandler{}, slog.New(slog.DiscardHandler), nil)
+	}()
 
 	cancel()
 	select {

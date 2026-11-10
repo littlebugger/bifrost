@@ -11,6 +11,8 @@ package config
 
 import (
 	"crypto/x509"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -19,19 +21,89 @@ import (
 // Config is the fully decoded, resolved, and validated Bifrost
 // configuration returned by Load.
 type Config struct {
-	Defaults Defaults
-	Listener Listener
-	Pools    []Pool
-	Routing  Routing
-	Admin    *Admin // nil: no admin plane configured (logged warning, see Validate)
-	Limits   Limits
+	Defaults  Defaults
+	Listeners []Listener
+	Pools     []Pool
+	Routing   Routing
+	Admin     *Admin // nil: no admin plane configured (logged warning, see Validate)
+	Limits    Limits
 
-	// fileRange and listenerRanges back Validate's structural checks (e.g.
-	// "exactly one listener block") that have no single resolved field to
-	// anchor to. Zero value (unset) for a Config built by hand rather than
-	// by Load; Validate degrades to an unanchored diagnostic in that case.
-	fileRange      hcl.Range
-	listenerRanges []hcl.Range
+	// fileRange backs Validate's structural checks (e.g. "at least one
+	// listener block") that have no single resolved field to anchor to.
+	// Zero value (unset) for a Config built by hand rather than by Load;
+	// Validate degrades to an unanchored diagnostic in that case.
+	fileRange hcl.Range
+}
+
+// PrimaryListener returns the first configured listener. Multi-listener
+// routing is live and per-transaction code paths use the arriving
+// listener's own fields directly, never this; its one remaining caller is
+// defaults.go's pool.EhloName fallback, a listener-agnostic default that
+// has to pick *some* hostname when a single-listener config leaves
+// ehlo_name unset everywhere (see docs/operations.md's "Multiple
+// listeners" section for the multi-listener caveat this implies).
+// Defensive against a zero-listener Config instead of indexing bare into
+// Listeners: a syntactically valid but listener-less file can reach
+// resolveInheritance and the holder before Validate's "Missing listener
+// block" error has a chance to reject it (see cmd/bifrost's
+// diags.HasErrors() gate, which runs after both).
+func (c *Config) PrimaryListener() *Listener {
+	if len(c.Listeners) == 0 {
+		return &Listener{}
+	}
+	return &c.Listeners[0]
+}
+
+// UnionCapabilities returns every capability advertised by any listener,
+// deduped case-insensitively by name (first spelling wins), with SIZE
+// collapsed to one entry carrying the maximum required byte count (a
+// bare "SIZE" — unlimited required — loses to any numeric one; absent
+// entirely if no listener advertises SIZE at all). A numeric "SIZE 0" is
+// treated the same as bare SIZE: both mean unlimited-required (RFC 1870),
+// so neither ever wins over a real positive value. STARTTLS and every
+// other capability pass through unchanged; backend.checkSuperset already
+// ignores STARTTLS.
+//
+// This is the health prober's required-capability referent (see
+// internal/health's sync): probes are per-server, not per-transaction,
+// so a backend must satisfy every listener that could route to it, not
+// just one (design doc's "Backend capability referent"). Per-transaction
+// checks are unaffected — those use the arriving listener's own
+// Capabilities directly.
+//
+// Output order is stable: first-seen order across listeners (SIZE keeps
+// the position of its first occurrence), so callers can assert exact
+// slices.
+func (c *Config) UnionCapabilities() []string {
+	var union []string
+	seen := make(map[string]int) // uppercased capability name -> index in union
+	sizeIdx := -1
+	var sizeMax int64
+
+	for _, l := range c.Listeners {
+		for _, capa := range l.Capabilities {
+			verb, arg, _ := strings.Cut(strings.ToUpper(strings.TrimSpace(capa)), " ")
+			if verb == "SIZE" {
+				if sizeIdx == -1 {
+					sizeIdx = len(union)
+					union = append(union, "SIZE") // placeholder, fixed up below
+				}
+				if n, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64); err == nil && n > sizeMax {
+					sizeMax = n
+				}
+				continue
+			}
+			if _, ok := seen[verb]; !ok {
+				seen[verb] = len(union)
+				union = append(union, capa)
+			}
+		}
+	}
+
+	if sizeIdx >= 0 && sizeMax > 0 {
+		union[sizeIdx] = "SIZE " + strconv.FormatInt(sizeMax, 10)
+	}
+	return union
 }
 
 // Defaults holds the config-wide fallback values consulted by pool/server
@@ -111,9 +183,12 @@ type CheckParams struct {
 	fieldRanges map[string]hcl.Range
 }
 
-// Listener is the client-facing bind. Exactly one is supported in v1
-// (Validate rejects more or fewer).
+// Listener is one client-facing bind. Name is the block's label ("default"
+// when the single configured listener block was left unlabeled — see
+// rawFile.convert); Validate requires a label the moment there is more
+// than one (see validateListenerIdentity).
 type Listener struct {
+	Name     string
 	Bind     string
 	Hostname string
 	StartTLS *StartTLS     // nil: STARTTLS not advertised
@@ -203,7 +278,7 @@ type Pool struct {
 	BackendTLS           string // "none" | "starttls" | "starttls-verify"; default "none"
 	BackendTLSServerName string
 	BackendTLSCA         string
-	EhloName             string // resolved: pool -> defaults.ehlo_name -> listener hostname
+	EhloName             string // resolved: pool -> defaults.ehlo_name -> first listener's hostname (PrimaryListener; set defaults.ehlo_name explicitly with multiple listeners)
 	MaxTransactions      int    // pool-level default for servers' max_transactions
 	ReuseEnvelopes       int    // 0 or 1 (default): fresh conn per envelope; N>1: session-affine reuse, capped at N envelopes per backend conn
 	Check                CheckParams
@@ -279,10 +354,14 @@ type Routing struct {
 }
 
 // RoutingRule matches on client CIDR and/or MAIL FROM domain (wildcard
-// prefix allowed, e.g. "*.news.example.com") and selects a pool.
+// prefix allowed, e.g. "*.news.example.com") and selects a pool. Listener
+// optionally restricts the rule to sessions accepted on one of the named
+// listeners (see internal/balance/rules.go for the match against the
+// session's actual listener).
 type RoutingRule struct {
 	ClientCIDR     []string
 	MailFromDomain []string
+	Listener       []string
 	Pool           string
 
 	rng hcl.Range

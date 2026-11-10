@@ -190,7 +190,12 @@ func (c *Checker) sync(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
-	c.listenerCaps = cfg.Listener.Capabilities
+	// The prober is per-server, not per-transaction, so it has no single
+	// listener to check a backend against — it requires the union of
+	// every listener's capabilities (design doc's "Backend capability
+	// referent"; per-transaction checks use the arriving listener's own
+	// set directly and never touch this field, see proxy/attach.go).
+	c.listenerCaps = cfg.UnionCapabilities()
 
 	want := make(map[svrKey]struct{})
 	for pi := range cfg.Pools {

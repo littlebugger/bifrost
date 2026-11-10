@@ -87,7 +87,7 @@ func startStack(t *testing.T, cfg *config.Config, withHealth bool) *stack {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		serveErr <- proxy.Serve(ctx, ln, cfg, nil, s.relay, quiet)
+		serveErr <- proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, s.relay, quiet, nil)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -130,11 +130,11 @@ func poolConfig(timeouts config.Timeouts, tlsMode string, addrs ...string) *conf
 		})
 	}
 	return &config.Config{
-		Defaults: config.Defaults{Timeouts: timeouts},
-		Listener: config.Listener{Hostname: "bifrost.chaos", Capabilities: backendCaps()},
-		Pools:    []config.Pool{pool},
-		Routing:  config.Routing{DefaultPool: "p"},
-		Limits:   config.Limits{GlobalMaxConn: 256},
+		Defaults:  config.Defaults{Timeouts: timeouts},
+		Listeners: []config.Listener{{Hostname: "bifrost.chaos", Capabilities: backendCaps()}},
+		Pools:     []config.Pool{pool},
+		Routing:   config.Routing{DefaultPool: "p"},
+		Limits:    config.Limits{GlobalMaxConn: 256},
 	}
 }
 

@@ -58,6 +58,20 @@ type TxnMeta struct {
 	// not parse — the backend, not Bifrost, is the syntax authority).
 	// Populated by mailFromDomain from the transaction's raw MAIL line.
 	MailFromDomain string
+
+	// Listener is the name of the listener on which the session arrived.
+	Listener string
+}
+
+// listenerName is lst.Name, empty-safe: a hand-built Txn outside a real
+// session (tests) carries no listener at all, and both meta() (this
+// file's TxnMeta.Listener) and emitLog (txnlog.go's "listener" field) need
+// that to render as "" rather than panic.
+func listenerName(lst *config.Listener) string {
+	if lst == nil {
+		return ""
+	}
+	return lst.Name
 }
 
 // mailFromDomain extracts and lowercases the domain from a MAIL command
@@ -473,7 +487,8 @@ func (t *txn) timeouts() config.Timeouts {
 // this is a deliberate simplification: a total-attach failure has no
 // single server at fault, so labeling one candidate would misattribute
 // it, and there is no cheap way from here to name the pool a PickFunc
-// resolved without one ever attaching).
+// resolved without one ever attaching). The listener label is always the
+// one this transaction actually arrived on (t.tx.lst).
 func (t *txn) countTxn(srv *config.Server, class string) {
 	var poolName string
 	if srv != nil {
@@ -481,5 +496,5 @@ func (t *txn) countTxn(srv *config.Server, class string) {
 			poolName = pool.Name
 		}
 	}
-	t.r.metrics.Transaction(poolName, srvName(srv), class)
+	t.r.metrics.Transaction(listenerName(t.tx.lst), poolName, srvName(srv), class)
 }

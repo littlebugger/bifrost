@@ -62,10 +62,10 @@ func chaosConfig(maxconn, perServerCap int, addrs ...string) *config.Config {
 	}
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: chaosTimeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.chaos",
 			Capabilities: backendCaps(),
-		},
+		}},
 		Pools:   []config.Pool{pool},
 		Routing: config.Routing{DefaultPool: "p"},
 		Limits:  config.Limits{GlobalMaxConn: maxconn},
@@ -178,7 +178,9 @@ func TestChaosMaxconnExhaustion(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- proxy.Serve(ctx, ln, cfg, nil, relay, slog.New(slog.DiscardHandler)) }()
+	go func() {
+		serveDone <- proxy.Serve(ctx, ln, cfg, cfg.PrimaryListener(), nil, relay, slog.New(slog.DiscardHandler), nil)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {

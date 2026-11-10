@@ -126,8 +126,8 @@ func TestRestartRequiredListenerAuth(t *testing.T) {
 		return &ListenerAuth{Users: []AuthUser{{Name: "alice", Salt: "salt", HashedPassword: hash}}}
 	}
 
-	oldCfg := &Config{Listener: Listener{Auth: authWith(hashA)}}
-	changedCfg := &Config{Listener: Listener{Auth: authWith(hashB)}}
+	oldCfg := &Config{Listeners: []Listener{{Auth: authWith(hashA)}}}
+	changedCfg := &Config{Listeners: []Listener{{Auth: authWith(hashB)}}}
 
 	warnings := RestartRequired(oldCfg, changedCfg)
 	var authWarning string
@@ -165,8 +165,8 @@ func TestRestartRequiredListenerAuthCleartext(t *testing.T) {
 		}
 	}
 
-	oldCfg := &Config{Listener: Listener{Auth: authWith(true)}}
-	changedCfg := &Config{Listener: Listener{Auth: authWith(false)}}
+	oldCfg := &Config{Listeners: []Listener{{Auth: authWith(true)}}}
+	changedCfg := &Config{Listeners: []Listener{{Auth: authWith(false)}}}
 
 	var authWarning string
 	for _, w := range RestartRequired(oldCfg, changedCfg) {
@@ -179,7 +179,7 @@ func TestRestartRequiredListenerAuthCleartext(t *testing.T) {
 			RestartRequired(oldCfg, changedCfg))
 	}
 
-	identicalCfg := &Config{Listener: Listener{Auth: authWith(true)}}
+	identicalCfg := &Config{Listeners: []Listener{{Auth: authWith(true)}}}
 	for _, w := range RestartRequired(oldCfg, identicalCfg) {
 		if strings.Contains(w, "listener auth changed") {
 			t.Errorf("RestartRequired(old, identical) = %v, want no listener auth warning for identical auth", w)
@@ -255,4 +255,143 @@ func hasWarning(warnings []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestRestartRequiredSingleListenerWordingUnchanged pins the exact
+// unqualified wording a single-listener config has always produced:
+// test/integration/reload_test.go greps the running process's log for the
+// literal substring "listener hostname changed", so keying RestartRequired
+// by listener name internally must not start quoting a name nobody wrote
+// in the file for the common one-listener case.
+func TestRestartRequiredSingleListenerWordingUnchanged(t *testing.T) {
+	oldCfg := &Config{Listeners: []Listener{{Name: "default", Hostname: "bifrost.test", Capabilities: []string{"PIPELINING"}}}}
+	newCfg := &Config{Listeners: []Listener{{Name: "default", Hostname: "renamed.test", Capabilities: []string{"PIPELINING", "8BITMIME"}}}}
+
+	warnings := RestartRequired(oldCfg, newCfg)
+	if !hasWarning(warnings, "listener hostname changed") {
+		t.Errorf("RestartRequired = %v, want the unqualified %q", warnings, "listener hostname changed")
+	}
+	if !hasWarning(warnings, "listener capabilities changed") {
+		t.Errorf("RestartRequired = %v, want the unqualified %q", warnings, "listener capabilities changed")
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, `"default"`) {
+			t.Errorf("warning %q names the listener even though it is the only one configured", w)
+		}
+	}
+}
+
+// TestRestartRequiredPerListenerName: with two listeners configured
+// ("default" and "bulk"), an edit to "bulk"'s hostname, capabilities,
+// auth, or starttls must warn BY NAME, and "default" — untouched — must
+// stay silent: the comparison is keyed per listener, not by position 0
+// alone (PrimaryListener's Task-1 transitional reads). Identical
+// two-listener configs must warn about nothing.
+func TestRestartRequiredPerListenerName(t *testing.T) {
+	base := func() *Config {
+		return &Config{Listeners: []Listener{
+			{Name: "default", Bind: "127.0.0.1:2525", Hostname: "bifrost.test", Capabilities: []string{"PIPELINING"}},
+			{
+				Name: "bulk", Bind: "127.0.0.1:2526", Hostname: "bulk.test", Capabilities: []string{"PIPELINING"},
+				Auth:     &ListenerAuth{Users: []AuthUser{{Name: "alice", Salt: "salt", HashedPassword: strings.Repeat("a", 64)}}},
+				StartTLS: &StartTLS{Cert: "bulk.crt", Key: "bulk.key", MinVersion: "1.2"},
+			},
+		}}
+	}
+
+	tests := []struct {
+		name   string
+		modify func(*Config)
+		want   string
+	}{
+		{"hostname", func(c *Config) { c.Listeners[1].Hostname = "renamed.test" }, `listener "bulk" hostname changed`},
+		{"capabilities", func(c *Config) { c.Listeners[1].Capabilities = []string{"PIPELINING", "8BITMIME"} }, `listener "bulk" capabilities changed`},
+		{"auth", func(c *Config) { c.Listeners[1].Auth.Users[0].HashedPassword = strings.Repeat("b", 64) }, `listener "bulk" auth changed`},
+		{"starttls cert", func(c *Config) { c.Listeners[1].StartTLS.Cert = "other.crt" }, `listener "bulk" starttls changed`},
+		{"starttls min_version", func(c *Config) { c.Listeners[1].StartTLS.MinVersion = "1.3" }, `listener "bulk" starttls min_version changed (1.2 -> 1.3)`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldCfg := base()
+			newCfg := base()
+			tc.modify(newCfg)
+
+			warnings := RestartRequired(oldCfg, newCfg)
+			if !hasWarning(warnings, tc.want) {
+				t.Fatalf("RestartRequired = %v, want a warning containing %q", warnings, tc.want)
+			}
+			for _, w := range warnings {
+				if strings.Contains(w, `"default"`) {
+					t.Errorf("warning %q names the untouched listener %q, want only \"bulk\" named", w, "default")
+				}
+			}
+		})
+	}
+
+	if w := RestartRequired(base(), base()); len(w) != 0 {
+		t.Errorf("RestartRequired on identical two-listener configs = %v, want none", w)
+	}
+}
+
+// TestRestartRequiredListenerAddedOrRemoved: adding or removing a whole
+// listener block needs a restart to open (or stop accepting on) its
+// socket — same precedent as every other listener-identity edit — so it
+// warns by name rather than silently vanishing from the diff.
+func TestRestartRequiredListenerAddedOrRemoved(t *testing.T) {
+	oneListener := &Config{Listeners: []Listener{{Name: "default", Bind: "127.0.0.1:2525"}}}
+	twoListeners := &Config{Listeners: []Listener{
+		{Name: "default", Bind: "127.0.0.1:2525"},
+		{Name: "bulk", Bind: "127.0.0.1:2526"},
+	}}
+
+	if w := RestartRequired(oneListener, twoListeners); !hasWarning(w, `listener "bulk" added`) {
+		t.Errorf("RestartRequired(one, +bulk) = %v, want a warning that listener \"bulk\" was added", w)
+	}
+	if w := RestartRequired(twoListeners, oneListener); !hasWarning(w, `listener "bulk" removed`) {
+		t.Errorf("RestartRequired(two, -bulk) = %v, want a warning that listener \"bulk\" was removed", w)
+	}
+}
+
+// TestBindChangeNamesTheSurvivingListener: a bind edit on a listener name
+// present in both old and newCfg is still the one change a reload cannot
+// apply (D14) — unchanged from the single-listener rule — except the
+// rejection now names which listener moved.
+func TestBindChangeNamesTheSurvivingListener(t *testing.T) {
+	oldCfg := &Config{Listeners: []Listener{
+		{Name: "default", Bind: "127.0.0.1:2525"},
+		{Name: "bulk", Bind: "127.0.0.1:2526"},
+	}}
+	newCfg := &Config{Listeners: []Listener{
+		{Name: "default", Bind: "127.0.0.1:2525"},
+		{Name: "bulk", Bind: "127.0.0.1:2527"},
+	}}
+
+	err := BindChange(oldCfg, newCfg)
+	if err == nil {
+		t.Fatalf("BindChange(old, new) = nil, want a rejection naming listener %q", "bulk")
+	}
+	if !strings.Contains(err.Error(), `"bulk"`) || !strings.Contains(err.Error(), "restart required") {
+		t.Errorf("BindChange error = %q, want it to name listener \"bulk\" and say a restart is required", err.Error())
+	}
+}
+
+// TestBindChangeListenerAddedOrRemovedIsNotARejection: a listener added
+// or removed has no surviving counterpart bind to compare — unlike a
+// moved bind on a name both sides share, that is a RestartRequired
+// warning (a new or departed socket needs a restart to open or to stop
+// accepting on), never the BindChange rejection.
+func TestBindChangeListenerAddedOrRemovedIsNotARejection(t *testing.T) {
+	oneListener := &Config{Listeners: []Listener{{Name: "default", Bind: "127.0.0.1:2525"}}}
+	twoListeners := &Config{Listeners: []Listener{
+		{Name: "default", Bind: "127.0.0.1:2525"},
+		{Name: "bulk", Bind: "127.0.0.1:2526"},
+	}}
+
+	if err := BindChange(oneListener, twoListeners); err != nil {
+		t.Errorf("BindChange(one, +bulk) = %v, want nil (an added listener is a RestartRequired warning, not a bind rejection)", err)
+	}
+	if err := BindChange(twoListeners, oneListener); err != nil {
+		t.Errorf("BindChange(two, -bulk) = %v, want nil (a removed listener is a RestartRequired warning, not a bind rejection)", err)
+	}
 }

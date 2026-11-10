@@ -17,7 +17,7 @@ import (
 // user, rttskr-team/pw — the credential the AUTH scenarios exercise.
 func authTestConfig() *config.Config {
 	cfg := tlsTestConfig()
-	cfg.Listener.Auth = &config.ListenerAuth{
+	cfg.PrimaryListener().Auth = &config.ListenerAuth{
 		Users: []config.AuthUser{testAuthUser("rttskr-team", "s1", "pw")},
 	}
 	return cfg
@@ -35,7 +35,7 @@ func authPlainPayload(authcid, password string) string {
 // once at startup, not once per connection.
 func tlsTestConfig() *config.Config {
 	cfg := testConfig()
-	cfg.Listener.Capabilities = []string{"PIPELINING", "8BITMIME", "SIZE 10485760", "STARTTLS"}
+	cfg.PrimaryListener().Capabilities = []string{"PIPELINING", "8BITMIME", "SIZE 10485760", "STARTTLS"}
 	return cfg
 }
 
@@ -232,7 +232,7 @@ func TestSessionAuthRequiresTLS538(t *testing.T) {
 // matching the 538 gate (auth.go) which already accepts a blind AUTH here.
 func TestSessionAuthAllowCleartextWithStartTLS(t *testing.T) {
 	cfg := authTestConfig()
-	cfg.Listener.Auth.AllowCleartext = true
+	cfg.PrimaryListener().Auth.AllowCleartext = true
 	c := newTestClient(t, cfg, fakesmtp.TestCert(t), &stubHandler{})
 	c.expect("220 bifrost.test ESMTP")
 
@@ -251,7 +251,7 @@ func TestSessionAuthAllowCleartextWithStartTLS(t *testing.T) {
 // shows AUTH PLAIN before any upgrade, and AUTH PLAIN succeeds outright.
 func TestSessionAuthAllowCleartext(t *testing.T) {
 	cfg := testConfig()
-	cfg.Listener.Auth = &config.ListenerAuth{
+	cfg.PrimaryListener().Auth = &config.ListenerAuth{
 		Users:          []config.AuthUser{testAuthUser("rttskr-team", "s1", "pw")},
 		AllowCleartext: true,
 	}

@@ -63,7 +63,7 @@ func serve(t *testing.T, cfg *config.Config, h proxy.TxnHandler) string {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s := proxy.NewSession(conn, cfg, nil, h, slog.New(slog.DiscardHandler))
+				s := proxy.NewSession(conn, cfg, cfg.PrimaryListener(), nil, h, slog.New(slog.DiscardHandler))
 				if err := s.Run(context.Background()); err != nil {
 					t.Errorf("session ended with %v, want nil", err)
 				}
@@ -108,10 +108,10 @@ func m1Config(addrs ...string) *config.Config {
 	}
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "SIZE 104857600"},
-		},
+		}},
 		Pools:   []config.Pool{pool},
 		Routing: config.Routing{DefaultPool: "p"},
 	}
@@ -368,10 +368,10 @@ func TestM1WithRealRouter(t *testing.T) {
 func domainRoutedConfig(promoAddr, defaultAddr string) *config.Config {
 	return &config.Config{
 		Defaults: config.Defaults{Timeouts: m1Timeouts()},
-		Listener: config.Listener{
+		Listeners: []config.Listener{{
 			Hostname:     "bifrost.test",
 			Capabilities: []string{"PIPELINING", "8BITMIME", "SIZE 104857600"},
-		},
+		}},
 		Pools: []config.Pool{
 			{
 				Name: "promo", Balance: "roundrobin", BackendTLS: "none", EhloName: "bifrost.test",

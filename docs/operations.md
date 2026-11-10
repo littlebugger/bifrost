@@ -7,8 +7,9 @@ overall design and `docs/plans/epic-09-observability.md` for the plan
 this guide implements.
 
 Everything here describes a running `bifrost` binary. The process itself
-— config loading, both listeners, the health checker, the admin plane,
-`SIGTERM` drain and `SIGHUP` reload — is exercised end to end by
+— config loading, every configured listener plus the admin plane, the
+health checker, `SIGTERM` drain and `SIGHUP` reload — is exercised end to
+end by
 `test/integration` (tag `integration`), which starts the real built
 binary as a child process; the tests named below are the citations.
 
@@ -123,9 +124,22 @@ $ curl -s http://127.0.0.1:8081/stats | jq .
       "backend_dials_ok": 5104,
       "backend_dials_fail": 2
     }
+  ],
+  "listeners": [
+    {
+      "name": "default",
+      "sessions_active": 12,
+      "sessions_total": 8041
+    }
   ]
 }
 ```
+
+`listeners` carries one row per configured `listener` block (one row
+even in the common single-, unlabeled-listener case, named `"default"`),
+each reshaping the same `bifrost_sessions_active`/`bifrost_sessions_total`
+series the `totals` block sums across every listener — see "Multiple
+listeners" below.
 
 ### `GET /healthz`
 
@@ -236,14 +250,17 @@ and `Validate` a `bifrost -c -f <path>` invocation runs before ever
 starting.
 
 One extra rejection applies to reload and not to startup: a file that
-moves `listener.bind` or `admin.bind` is refused **whole**, with
+moves the bind of a listener **present under the same name before and
+after**, or moves `admin.bind`, is refused **whole**, with
 `restart required`, because those sockets are already open and v1 does
 not re-bind them (D14 — a re-bind would orphan every long-lived session,
 which is the thing hot reload exists to avoid). Nothing else in that file
 is applied either, so an operator never ends up with half a config.
 Proven by `TestReloadEndpointBindChange` (`internal/admin/write_test.go`)
 for the endpoint and `TestReloadListenerChangeRejected`
-(`test/integration/reload_test.go`) for `SIGHUP`.
+(`test/integration/reload_test.go`) for `SIGHUP`. Adding or removing a
+whole `listener` block is a different, milder case — a warning, not this
+rejection — see "Multiple listeners" below.
 
 ## Reload runbook and the survival matrix
 
@@ -420,6 +437,8 @@ and used by both the relay's dialer and the health checker's probe
 file is a load error, so `-c` catches it before a restart does.
 
 ## SMTP AUTH
+
+Working example: `examples/auth.hcl`.
 
 Bifrost terminates SMTP AUTH PLAIN locally on each leg, independently:
 the client authenticates *to bifrost*, and — completely separately —
@@ -602,7 +621,168 @@ authenticates for real, so a rotated or mistyped backend password
 surfaces in `/servers` within one probe interval — the same guarantee
 capability drift already gets.
 
+## Multiple listeners
+
+Working example: `examples/multi-listener.hcl`.
+
+One bifrost process can serve N client-facing ports instead of one, each
+with its own bind, hostname, STARTTLS identity, auth store, and advertised
+capability set:
+
+```hcl
+listener "transactional" {
+  bind         = "0.0.0.0:2525"
+  hostname     = "tx.mail.example.com"
+  capabilities = ["PIPELINING", "8BITMIME"]
+}
+
+listener "bulk" {
+  bind     = "0.0.0.0:2526"
+  hostname = "bulk.mail.example.com"
+}
+
+routing {
+  rule { listener = ["bulk"] pool = "stream-b" }
+  default_pool = "stream-a"
+}
+```
+
+**Backward compatible by construction.** Exactly one unlabeled `listener`
+block stays valid and is given the implicit name `"default"` — every
+config written before this feature loads unchanged, and that single-
+listener deployment is still the common case. A label is required the
+moment a second `listener` block appears; config loading proves both
+shapes decode correctly (`TestLoadMultiListener`, `internal/config/
+load_test.go`). Validation rejects: a labelless block once there is more
+than one (`"listener blocks require labels"`), a name or a bind reused
+across two blocks (`"duplicate listener name"` / `"duplicate listener
+bind"`), and a routing rule naming a listener that doesn't exist
+(`"routing rule references unknown listener"`) — all in
+`internal/config/validate.go`.
+
+**Serving.** Each listener runs its own accept loop (today's loop,
+multiplied) — a Session carries the listener it arrived on, which supplies
+its own hostname/EHLO banner, capability set, STARTTLS identity, and auth
+store, so two listeners never share state through the Session path.
+Drain still covers every listener together, as one process-level event.
+If one listener's accept loop dies on its own — outside a drain — the
+whole process logs it by name and exits `1` (`cmd/bifrost/main.go`); a
+healthy sibling listener is unaffected until that happens, proven by
+`TestTwoListenersServeIndependently` and `TestOneListenerStoppingUnexpectedlyFailsProcess`
+(`cmd/bifrost/main_test.go`).
+
+**Routing key.** A rule's `listener` attribute is a list of names,
+AND-combined with the existing `client_cidr` and `mail_from_domain` keys
+— all three (where set) must match for the rule to fire; a rule that
+omits `listener` matches sessions from any listener. First match still
+wins, unchanged. Proven by `TestRuleListener` (`internal/balance/
+rules_test.go`) at the matching level and end to end — two listeners, two
+pools, two fake backends, one process — by
+`TestMultiListenerPortSplitRouting` (`test/integration/
+multilistener_test.go`), which confirms a message into listener A's port
+never reaches listener B's backend and vice versa.
+
+**Two capability referents, one deliberately conservative.** The listener
+feature doesn't just multiply listeners — it forks who a capability
+check is checked against:
+
+- *Per transaction*, the backend must satisfy only the **arriving**
+  listener's own advertised set: `RequiredCaps` is read off the Txn's own
+  listener, so a transaction from listener A is never held to listener
+  B's promises. `TestMultiListenerPerTransactionRequiredCaps` proves it
+  both ways — a backend missing a capability only listener B advertises
+  fails transactions from B while A's keep relaying normally against the
+  very same process.
+- The **health prober** checks each server once, not once per listener,
+  so it needs a single referent that stays safe for every listener that
+  could route to that server: the **union** of every configured
+  listener's advertised capabilities (`Config.UnionCapabilities`,
+  `internal/config/config.go`), with `SIZE` folded to the maximum
+  required value across listeners (a bare or absent `SIZE` never wins
+  over a real number, per RFC 1870). This is conservative on purpose — a
+  backend must be able to serve *any* listener that might send it
+  traffic, not just whichever one an operator had in mind — at the cost
+  of occasionally marking a backend `incompatible` for a capability only
+  one of several listeners needs. A per-pool `required_capabilities`
+  override remains a named, unshipped escape hatch for the deployment
+  that finds union too strict (see PROJECT.md). Proven by
+  `TestUnionCapabilities` (`internal/config/union_test.go`), the
+  scheduler wiring that actually feeds probes the union
+  (`TestSyncPopulatesUnionCapabilities`, `internal/health/
+  scheduler_test.go`), and the probe-level superset check against it
+  (`TestProbeRequiresUnionOfListenerCapabilities`, `internal/health/
+  probe_test.go`). The prober's union is live — it re-reads off the
+  swapped-in config at the next resync — while a transaction's
+  per-listener set is read off the `*config.Listener` each listener's
+  accept loop captured at startup; a reload that edits capabilities is
+  one of the `RestartRequired` warnings below, so the two can disagree
+  (the prober checking against the new set, transactions still enforcing
+  the old one) for exactly the window between that reload and the
+  restart it already told you to do.
+
+**Auth isolation.** Each listener's `auth` block is its own user store —
+a credential valid on one listener is simply unknown on another, same
+process, same reload generation. Proven end to end by
+`TestMultiListenerAuthIsolation` (`test/integration/
+multilistener_test.go`): a user that authenticates successfully against
+listener A gets `535 5.7.8 Authentication credentials invalid` against
+listener B.
+
+**Reload: a rejection and a warning, not the same thing.** Listeners are
+compared by NAME across a reload, not by position:
+
+- A bind edit on a listener name present **both before and after** is
+  the existing single-listener rejection, just now per-name: the whole
+  reload is refused with `restart required`, the live config untouched
+  — proven by `TestBindChangeNamesTheSurvivingListener`
+  (`internal/config/holder_test.go`). See "`POST /reload`" above for the
+  single-listener form of this rule.
+- A listener **added or removed** outright is not this rejection — there
+  is no surviving socket that silently moved, just a new one that isn't
+  open yet (or an old one still accepting until a restart stops it) — so
+  it's a `RestartRequired` warning instead, naming the listener:
+  `listener "bulk" added: restart required to apply` /
+  `listener "bulk" removed: restart required to apply`. Proven by
+  `TestBindChangeListenerAddedOrRemovedIsNotARejection` and
+  `TestRestartRequiredListenerAddedOrRemoved` (`internal/config/
+  holder_test.go`).
+- A surviving listener's `hostname`, `capabilities`, `auth` (including
+  `allow_cleartext`), or `starttls` edit is the same `RestartRequired`
+  warning single-listener configs have always produced, now compared and
+  reported **by listener name** when there is more than one configured —
+  an edit to `"bulk"` warns about `"bulk"` and leaves a silent `"default"`
+  alone: `TestRestartRequiredPerListenerName`. The single-listener,
+  common-case wording is pinned unchanged (`"listener hostname changed"`,
+  no quoted name) by `TestRestartRequiredSingleListenerWordingUnchanged`,
+  so existing log-scraping/alerting on that substring keeps working.
+- **Rename is removed+added, not a bind change.** Giving an existing bind
+  a new label reads as the old name being removed and the new name being
+  added — two warnings, never the bind rejection above — because the
+  already-open socket keeps serving under the **stale name** until an
+  actual restart re-resolves it to the new one. Plan a listener rename
+  around a restart, not just a reload.
+
+Pool/server/routing/weight/certificate edits on any listener stay
+reload-live exactly as before; nothing above changes that.
+
+**Observability.** The transaction log gains a `listener` field — see
+"Transaction log" below. `bifrost_transactions_total` and the session
+metrics (`bifrost_sessions_active`, `bifrost_sessions_total`) gain a
+`listener` label; no new metric families were added — see "Metrics
+reference" below. For a single, unlabeled `listener` block this label is
+simply `listener="default"` — the one visible `/metrics` change for a
+config that predates this feature. Every configured listener's
+`sessions_active`/`sessions_total` series is registered at zero at
+startup (and again for one a reload adds), not only once it has actually
+carried a session, so an idle fresh process still scrapes all sixteen
+documented metric names — see "Metrics reference" below. `GET /stats`
+gains a `listeners` array, one row per configured listener, each with its
+own `sessions_active`/`sessions_total` — see "`GET /stats`" above. `GET
+/servers` is unchanged: servers are pool-scoped, not listener-scoped.
+
 ## Backend connection reuse
+
+Working example: `examples/reuse.hcl`.
 
 By default (`reuse_envelopes` omitted, `0`, or `1`) every envelope gets
 its own backend connection, dialed and handshaked fresh, then politely
@@ -676,6 +856,8 @@ failover above, plus `TestReuseEnvelopesOmittedDialsFreshPerEnvelope`,
 which pins today's default behavior unchanged).
 
 ## DNS-discovered pool members
+
+Working example: `examples/dns-discovery.hcl`.
 
 A `server_dns` block is a server *template*: one DNS name whose answer
 stands in for N pool members, instead of N hand-written `server` blocks.
@@ -826,9 +1008,9 @@ registry `admin.New` serves:
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `bifrost_sessions_active` | gauge | — | client SMTP sessions currently open |
-| `bifrost_sessions_total` | counter | — | client SMTP sessions accepted, cumulative |
-| `bifrost_transactions_total` | counter | `pool`, `server`, `verdict_class` | mail transactions concluded; `verdict_class` is `2xx`/`4xx`/`5xx` for a relayed backend verdict, `synth_421`/`synth_451` for one Bifrost synthesized. **Does not** increment for `RSET` while attached, a torn/malformed backend reply, or a client hangup before any verdict — those have no single verdict to classify. The transaction log below still emits its one record for every one of those; `pool`/`server` are `""` there too on a total-attach failure (same rule as this metric's own labels) |
+| `bifrost_sessions_active` | gauge | `listener` | client SMTP sessions currently open, by the listener they arrived on |
+| `bifrost_sessions_total` | counter | `listener` | client SMTP sessions accepted, cumulative, by listener |
+| `bifrost_transactions_total` | counter | `listener`, `pool`, `server`, `verdict_class` | mail transactions concluded; `verdict_class` is `2xx`/`4xx`/`5xx` for a relayed backend verdict, `synth_421`/`synth_451` for one Bifrost synthesized. **Does not** increment for `RSET` while attached, a torn/malformed backend reply, or a client hangup before any verdict — those have no single verdict to classify. The transaction log below still emits its one record for every one of those; `pool`/`server` are `""` there too on a total-attach failure (same rule as this metric's own labels) |
 | `bifrost_synthesized_replies_total` | counter | `code_enhanced` (e.g. `"451 4.4.1"`) | replies Bifrost generated itself rather than relaying a backend's |
 | `bifrost_relay_bytes_total` | counter | `direction` (`to_backend`/`to_client`) | verbatim bytes relayed, by direction |
 | `bifrost_backend_dials_total` | counter | `server`, `result` (`ok`/`fail`) | backend dial attempts |
@@ -867,6 +1049,8 @@ delivered message, a latched failure, a client hangup, `RSET`) —
 |---|---|
 | `client` | client IP |
 | `helo` | the session's `EHLO`/`HELO` argument |
+| `listener` | the name of the listener the session arrived on (`"default"` for the common single-, unlabeled-listener case) — see "Multiple listeners" below |
+| `authn` | the authenticated client identity (`AUTH`'s authcid, RFC 4954), empty if the session never authenticated |
 | `pool`, `server` | the last-attached candidate, if any (`""` if every dial attempt failed) |
 | `mail_verdict` | the `MAIL` command's own reply code |
 | `rcpt_count` | recipients answered |

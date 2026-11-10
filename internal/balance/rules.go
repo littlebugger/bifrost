@@ -2,6 +2,7 @@ package balance
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/littlebugger/bifrost/internal/config"
@@ -22,13 +23,16 @@ func MatchPool(routing config.Routing, tx proxy.TxnMeta) string {
 }
 
 // ruleMatches reports whether every key rule actually specifies matches
-// tx (AND semantics between ClientCIDR and MailFromDomain; a key rule
-// leaves empty takes no part in the decision at all).
+// tx (AND semantics between ClientCIDR, MailFromDomain, and Listener;
+// a key rule leaves empty takes no part in the decision at all).
 func ruleMatches(rule config.RoutingRule, tx proxy.TxnMeta) bool {
 	if len(rule.ClientCIDR) > 0 && !matchesAnyCIDR(rule.ClientCIDR, tx.ClientIP) {
 		return false
 	}
 	if len(rule.MailFromDomain) > 0 && !matchesAnyDomain(rule.MailFromDomain, tx.MailFromDomain) {
+		return false
+	}
+	if len(rule.Listener) > 0 && !slices.Contains(rule.Listener, tx.Listener) {
 		return false
 	}
 	return true

@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/littlebugger/bifrost/internal/admin"
@@ -53,15 +53,45 @@ type app struct {
 	admin   *admin.Server    // nil when the config has no admin block
 	runner  *discover.Runner // nil when the config has no server_dns templates
 
-	smtpLn  net.Listener
+	smtpLns []namedListener
 	adminLn net.Listener // nil when the config has no admin block
-	tlsCfg  *tls.Config  // nil when the listener has no certificate
 
-	// certMu/certGen/certCache back GetCertificate: the certificate is
-	// parsed once per config generation, not once per handshake.
+	// globalConns is global_maxconn's counter: ONE process-wide atomic
+	// shared by every listener's proxy.Serve call, below, because the
+	// cap it enforces is a process limit ("global_maxconn stays
+	// global"), not a per-listener one. Allocated once here so N
+	// listeners share N's worth of visibility into the same total,
+	// instead of each silently getting its own cap.
+	globalConns *atomic.Int64
+
+	// certMu/certCache back every listener's GetCertificate: each
+	// listener's certificate is parsed at most once per config
+	// generation, not once per handshake — certEntry.gen is checked
+	// against the live holder value the same way the old single-listener
+	// certGen field was.
 	certMu    sync.Mutex
-	certGen   *config.Config
-	certCache *tls.Certificate
+	certCache map[string]certEntry // keyed by listener name
+}
+
+// namedListener is one configured listener's bound socket, its
+// client-facing TLS config (nil when it has no certificate), and the
+// config.Listener it serves. wire.go builds one per cfg.Listeners entry;
+// main.go runs one proxy.Serve accept loop per entry.
+type namedListener struct {
+	name   string
+	ln     net.Listener
+	tlsCfg *tls.Config
+	lst    *config.Listener
+}
+
+// certEntry is one listener's cached certificate, tagged with the config
+// generation it was parsed from, plus whether currentCert has already
+// logged the one-time warning for that listener having disappeared from
+// the live config (renamed or removed) while its socket stays open.
+type certEntry struct {
+	cert        *tls.Certificate
+	gen         *config.Config
+	warnedStale bool
 }
 
 // newApp builds every component and opens both listeners, so a bind
@@ -97,27 +127,16 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	checker := health.New(holder, nil, lg)
 	router := balance.NewRouter(holder, checker.Eligible, rand.New(rand.NewSource(time.Now().UnixNano())))
 
-	a := &app{cfgPath: cfgPath, lg: lg, holder: holder, metrics: m, checker: checker, router: router, runner: runner}
+	a := &app{cfgPath: cfgPath, lg: lg, holder: holder, metrics: m, checker: checker, router: router, runner: runner, globalConns: new(atomic.Int64)}
 
 	// router.Pick/router.Lease go in as closures, which is the whole
 	// reason PickFunc/LeaseFunc are function types: internal/proxy never
 	// imports internal/balance, and the dependency is inverted right here.
 	a.relay = proxy.NewRelay(router.Pick, holder, lg, checker, router.Lease, m)
 
-	a.tlsCfg = a.listenerTLS(cfg)
-	if a.tlsCfg != nil {
-		// Fail fast: config validation proves the cert/key files are
-		// readable, not that they are a usable keypair.
-		if _, err := a.currentCert(); err != nil {
-			return nil, fmt.Errorf("listener certificate: %w", err)
-		}
+	if err := a.listen(cfg); err != nil {
+		return nil, err
 	}
-
-	ln, err := net.Listen("tcp", cfg.Listener.Bind)
-	if err != nil {
-		return nil, fmt.Errorf("listener bind %q: %w", cfg.Listener.Bind, err)
-	}
-	a.smtpLn = ln
 
 	if cfg.Admin != nil {
 		// a.applyReload (not a second, admin-local load/validate/swap
@@ -126,7 +145,7 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 		a.admin = admin.New(holder, checker, router, m, a.applyReload, lg)
 		adminLn, err := a.admin.Listen()
 		if err != nil {
-			_ = ln.Close()
+			a.closeListeners()
 			return nil, fmt.Errorf("admin bind %q: %w", cfg.Admin.Bind, err)
 		}
 		a.adminLn = adminLn
@@ -134,12 +153,48 @@ func newApp(cfgPath string, cfg *config.Config, lg *slog.Logger) (*app, error) {
 	return a, nil
 }
 
-// close releases both listeners. Safe to call after a drain has already
-// closed the SMTP one.
-func (a *app) close() {
-	if a.smtpLn != nil {
-		_ = a.smtpLn.Close()
+// listen builds one net.Listener and one client-leg TLS config per entry
+// in cfg.Listeners, failing fast (and unwinding every socket already
+// opened) on the first bind error or unusable certificate — so a bad
+// second listener never leaves a first one silently running.
+func (a *app) listen(cfg *config.Config) error {
+	for i := range cfg.Listeners {
+		lst := &cfg.Listeners[i]
+		ln, err := net.Listen("tcp", lst.Bind)
+		if err != nil {
+			a.closeListeners()
+			return fmt.Errorf("listener %q bind %q: %w", lst.Name, lst.Bind, err)
+		}
+
+		var tlsCfg *tls.Config
+		if lst.StartTLS != nil {
+			tlsCfg = a.listenerTLS(lst)
+			// Fail fast: config validation proves the cert/key files are
+			// readable, not that they are a usable keypair.
+			if _, err := a.currentCert(lst.Name); err != nil {
+				_ = ln.Close()
+				a.closeListeners()
+				return fmt.Errorf("listener %q certificate: %w", lst.Name, err)
+			}
+		}
+		a.smtpLns = append(a.smtpLns, namedListener{name: lst.Name, ln: ln, tlsCfg: tlsCfg, lst: lst})
+		a.metrics.RegisterListener(lst.Name)
 	}
+	return nil
+}
+
+// closeListeners closes every bound SMTP socket. Exported to this file
+// only (close, below, is the public teardown both listeners share).
+func (a *app) closeListeners() {
+	for _, nl := range a.smtpLns {
+		_ = nl.ln.Close()
+	}
+}
+
+// close releases every listener. Safe to call after a drain has already
+// closed the SMTP ones.
+func (a *app) close() {
+	a.closeListeners()
 	if a.adminLn != nil {
 		_ = a.adminLn.Close()
 	}
@@ -164,47 +219,96 @@ func (a *app) adminAddr() string {
 // certificate on the very next handshake. TLS sessions already
 // established keep the certificate they negotiated — a live session's
 // certificate cannot be changed under it, and does not need to be.
-func (a *app) listenerTLS(cfg *config.Config) *tls.Config {
-	if cfg.Listener.StartTLS == nil {
-		return nil
-	}
+func (a *app) listenerTLS(lst *config.Listener) *tls.Config {
 	return &tls.Config{
-		MinVersion:     minTLSVersion(cfg.Listener.StartTLS.MinVersion),
-		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return a.currentCert() },
+		MinVersion:     minTLSVersion(lst.StartTLS.MinVersion),
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return a.currentCert(lst.Name) },
 	}
 }
 
-// currentCert returns the certificate named by the live config, parsing
-// it at most once per config generation: the holder's pointer identity is
-// the cache key, so a reload (the only thing that replaces it) is exactly
-// what re-reads the files from disk.
-func (a *app) currentCert() (*tls.Certificate, error) {
+// listenerNamed finds the listener named name in cfg, or nil if cfg is nil
+// or has none — the lookup currentCert uses to stay bound to a listener's
+// name across a reload, rather than its position in the slice.
+func listenerNamed(cfg *config.Config, name string) *config.Listener {
+	if cfg == nil {
+		return nil
+	}
+	for i := range cfg.Listeners {
+		if cfg.Listeners[i].Name == name {
+			return &cfg.Listeners[i]
+		}
+	}
+	return nil
+}
+
+// currentCert returns the named listener's certificate, parsing it at most
+// once per config generation: each cache entry's gen is checked against the
+// live holder value, so a reload (the only thing that replaces it) is
+// exactly what re-reads that listener's files from disk. Other listeners'
+// cached entries are untouched — one listener's reload failure or cert
+// rotation never invalidates another's.
+func (a *app) currentCert(name string) (*tls.Certificate, error) {
 	cfg := a.holder.Load()
-	if cfg == nil || cfg.Listener.StartTLS == nil {
-		return nil, errors.New("no listener certificate configured")
+	lst := listenerNamed(cfg, name)
+	if lst == nil || lst.StartTLS == nil {
+		// A reload can rename or remove a listener out from under a socket
+		// that is still open (and whose GetCertificate closure is still
+		// bound to its old name): docs promise that socket "keeps serving
+		// under the stale name", so a cached cert from before the rename
+		// is handed back here rather than failing every handshake while
+		// plaintext traffic on the same socket keeps working.
+		if lst == nil {
+			if crt, ok := a.staleCert(name); ok {
+				return crt, nil
+			}
+		}
+		return nil, fmt.Errorf("no certificate configured for listener %q", name)
 	}
 
 	a.certMu.Lock()
 	defer a.certMu.Unlock()
-	if a.certCache != nil && a.certGen == cfg {
-		return a.certCache, nil
+	if entry, ok := a.certCache[name]; ok && entry.gen == cfg {
+		return entry.cert, nil
 	}
-	crt, err := tls.LoadX509KeyPair(cfg.Listener.StartTLS.Cert, cfg.Listener.StartTLS.Key)
+	crt, err := tls.LoadX509KeyPair(lst.StartTLS.Cert, lst.StartTLS.Key)
 	if err != nil {
-		if a.certCache == nil {
-			return nil, err
+		if entry, ok := a.certCache[name]; ok {
+			// The two files are read as a pair, so a reload landing between
+			// an operator's two writes sees a mismatched one. Keep serving
+			// the certificate already loaded instead of failing handshakes,
+			// and do not cache the failure: entry.gen is untouched, so the
+			// next handshake re-reads and self-heals.
+			a.lg.Warn("listener certificate unreadable; keeping the one already loaded", "listener", name, "error", err)
+			return entry.cert, nil
 		}
-		// The two files are read as a pair, so a reload landing between an
-		// operator's two writes sees a mismatched one. Keep serving the
-		// certificate already loaded instead of failing handshakes, and do
-		// not cache the failure: certGen is untouched, so the next
-		// handshake re-reads and self-heals.
-		a.lg.Warn("listener certificate unreadable; keeping the one already loaded", "error", err)
-		return a.certCache, nil
+		return nil, err
 	}
-	a.certCache, a.certGen = &crt, cfg
-	a.lg.Info("listener certificate loaded", "cert", cfg.Listener.StartTLS.Cert)
-	return a.certCache, nil
+	if a.certCache == nil {
+		a.certCache = make(map[string]certEntry)
+	}
+	a.certCache[name] = certEntry{cert: &crt, gen: cfg}
+	a.lg.Info("listener certificate loaded", "listener", name, "cert", lst.StartTLS.Cert)
+	return &crt, nil
+}
+
+// staleCert returns the certificate already cached for a listener name no
+// longer present in the live config (currentCert's lst == nil case), so a
+// rename or removal never breaks STARTTLS on that listener's still-open
+// socket. The warning fires once per name, not once per handshake:
+// certEntry.warnedStale is flipped under the same lock that reads it.
+func (a *app) staleCert(name string) (*tls.Certificate, bool) {
+	a.certMu.Lock()
+	defer a.certMu.Unlock()
+	entry, ok := a.certCache[name]
+	if !ok {
+		return nil, false
+	}
+	if !entry.warnedStale {
+		entry.warnedStale = true
+		a.certCache[name] = entry
+		a.lg.Warn("listener renamed or removed from the live config; its still-open socket keeps serving the stale certificate", "listener", name)
+	}
+	return entry.cert, true
 }
 
 // hasDNSTemplates reports whether any pool in cfg declares a server_dns

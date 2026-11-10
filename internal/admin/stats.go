@@ -25,9 +25,17 @@ type serverStats struct {
 	BackendDialsFail  float64 `json:"backend_dials_fail"`
 }
 
+// listenerStats is GET /stats' per-listener session breakdown, alongside
+// the pre-existing (process-wide) totals.
+type listenerStats struct {
+	Name           string  `json:"name"`
+	SessionsActive float64 `json:"sessions_active"`
+	SessionsTotal  float64 `json:"sessions_total"`
+}
+
 // handleStats implements GET /stats: per pool/server counters (read from
 // the Prometheus registry, the single source of truth also serving
-// /metrics) plus balancer totals.
+// /metrics) plus balancer totals and a per-listener session breakdown.
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	mfs, err := s.m.Registry.Gather()
 	if err != nil {
@@ -36,14 +44,24 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	totals := totalsView{
-		SessionsActive:     metrics.GaugeValue(mfs, "bifrost_sessions_active", nil),
-		SessionsTotal:      metrics.CounterValue(mfs, "bifrost_sessions_total", nil),
+		SessionsActive:     metrics.SumGauge(mfs, "bifrost_sessions_active", nil),
+		SessionsTotal:      metrics.SumCounter(mfs, "bifrost_sessions_total", nil),
 		DuplicateRiskTotal: metrics.CounterValue(mfs, "bifrost_duplicate_risk_total", nil),
 	}
 
 	cfg := s.cfg.Load()
 	var servers []serverStats
+	var listeners []listenerStats
 	if cfg != nil {
+		for _, lst := range cfg.Listeners {
+			listeners = append(listeners, listenerStats{
+				Name: lst.Name,
+				SessionsActive: metrics.GaugeValue(mfs, "bifrost_sessions_active",
+					map[string]string{"listener": lst.Name}),
+				SessionsTotal: metrics.CounterValue(mfs, "bifrost_sessions_total",
+					map[string]string{"listener": lst.Name}),
+			})
+		}
 		for _, pool := range cfg.Pools {
 			for _, srv := range pool.Servers {
 				weight, _ := s.router.Weight(pool.Name, srv.Name)
@@ -63,7 +81,7 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"totals": totals, "servers": servers})
+	writeJSON(w, http.StatusOK, map[string]any{"totals": totals, "servers": servers, "listeners": listeners})
 }
 
 // writeJSON writes v as the response body with the given status code.

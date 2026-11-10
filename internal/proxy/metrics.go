@@ -14,21 +14,22 @@ import "strconv"
 // HealthSignals/LeaseFunc.
 type Metrics interface {
 	// SessionStarted/SessionEnded bracket one accepted client connection
-	// that became a Session (bifrost_sessions_active/_total).
-	SessionStarted()
-	SessionEnded()
+	// that became a Session, labeled by the listener it arrived on
+	// (bifrost_sessions_active/_total).
+	SessionStarted(listener string)
+	SessionEnded(listener string)
 
 	// BackendDial reports one backend.Dial attempt and whether it
 	// produced a usable leg (bifrost_backend_dials_total).
 	BackendDial(server string, ok bool)
 
-	// Transaction reports one concluded mail transaction: pool/server
-	// are best-effort ("" when nothing ever attached, e.g. every
-	// candidate failed to dial) and verdictClass is one of
-	// "2xx"/"4xx"/"5xx" for a relayed backend verdict or
-	// "synth_421"/"synth_451" for one Bifrost synthesized
+	// Transaction reports one concluded mail transaction: listener is the
+	// one the transaction arrived on; pool/server are best-effort ("" when
+	// nothing ever attached, e.g. every candidate failed to dial) and
+	// verdictClass is one of "2xx"/"4xx"/"5xx" for a relayed backend
+	// verdict or "synth_421"/"synth_451" for one Bifrost synthesized
 	// (bifrost_transactions_total).
-	Transaction(pool, server, verdictClass string)
+	Transaction(listener, pool, server, verdictClass string)
 
 	// SynthesizedReply reports one reply Bifrost generated itself rather
 	// than relaying a backend's, keyed by its code and enhanced status
@@ -60,14 +61,14 @@ const (
 // mirrors noSignals (relay.go).
 type noMetrics struct{}
 
-func (noMetrics) SessionStarted()                    {}
-func (noMetrics) SessionEnded()                      {}
-func (noMetrics) BackendDial(string, bool)           {}
-func (noMetrics) Transaction(string, string, string) {}
-func (noMetrics) SynthesizedReply(string)            {}
-func (noMetrics) RelayBytes(string, int)             {}
-func (noMetrics) DuplicateRisk()                     {}
-func (noMetrics) BackendReuse(string, string)        {}
+func (noMetrics) SessionStarted(string)                      {}
+func (noMetrics) SessionEnded(string)                        {}
+func (noMetrics) BackendDial(string, bool)                   {}
+func (noMetrics) Transaction(string, string, string, string) {}
+func (noMetrics) SynthesizedReply(string)                    {}
+func (noMetrics) RelayBytes(string, int)                     {}
+func (noMetrics) DuplicateRisk()                             {}
+func (noMetrics) BackendReuse(string, string)                {}
 
 // firstMetrics returns overrides[0], or noMetrics{} if empty — the
 // optional-trailing-argument shape NewRelay/Serve use so every pre-
