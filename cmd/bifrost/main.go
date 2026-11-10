@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +21,13 @@ import (
 
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// appHook, when non-nil, is invoked with the just-built *app right after
+// newApp succeeds: main_test.go's only way to reach into the live
+// listener sockets (serve itself never exposes app), mirroring wire.go's
+// defaultLookup test seam. Nil in production. Like defaultLookup, it is
+// process-global: no two tests that set it may run in parallel.
+var appHook func(*app)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -83,6 +91,9 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 		return 1
 	}
 	defer a.close()
+	if appHook != nil {
+		appHook(a)
+	}
 
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
@@ -90,7 +101,7 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 	defer cancelSessions()
 
 	var wg sync.WaitGroup
-	errc := make(chan error, 3)
+	errc := make(chan error, len(a.smtpLns)+3) // every listener plus the 3 other long-runners: no sender ever blocks
 	serveDone := make(chan struct{})
 	start := func(name string, fn func() error) {
 		wg.Add(1)
@@ -106,13 +117,20 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 	// return means nothing is in flight on that listener any more.
 	// serveDone — the signal the drain sequence waits on — only closes
 	// once ALL of them have returned, via the smtpWG + closer goroutine
-	// below, not the first one back.
+	// below, not the first one back. A listener returning without a drain
+	// in progress (sessionCtx still live) is caught per-listener, below,
+	// via errc — not by serveDone, which N-1 still-healthy listeners would
+	// keep from ever firing.
 	var smtpWG sync.WaitGroup
 	for _, nl := range a.smtpLns {
 		smtpWG.Add(1)
 		start("smtp listener "+nl.name, func() error {
 			defer smtpWG.Done()
-			return proxy.Serve(sessionCtx, nl.ln, cfg, nl.lst, nl.tlsCfg, a.relay, lg, a.metrics)
+			err := proxy.Serve(sessionCtx, nl.ln, cfg, nl.lst, nl.tlsCfg, a.relay, lg, a.metrics)
+			if err == nil && sessionCtx.Err() == nil {
+				err = errors.New("stopped unexpectedly: no drain in progress")
+			}
+			return err
 		})
 	}
 	go func() { smtpWG.Wait(); close(serveDone) }()
@@ -165,11 +183,20 @@ func serve(cfgPath string, cfg *config.Config, stderr io.Writer) int {
 			a.drain(cancelSessions, serveDone)
 			return stop(0)
 		case err := <-errc:
+			// A single listener dying outside a drain lands here (wrapped
+			// with its own name, above) just as readily as any other
+			// long-runner's error: errc is the primary detector now that
+			// serveDone only closes once every listener has returned.
 			lg.Error("component failed; shutting down", "error", err)
 			return stop(1)
 		case <-serveDone:
-			// Serve returned on its own, with no error and no drain: the
-			// listener is gone and there is nothing left to serve.
+			// serveDone is "nothing in flight on any listener" — the
+			// drain's own signal, consumed inside a.drain before this
+			// select ever sees it. Reaching it here with no drain
+			// underway means every listener returned cleanly on its own
+			// (each already reported itself via errc above, but the
+			// smtpWG-closer goroutine can win the race and close this
+			// first): still nothing left to serve, still an error.
 			lg.Error("smtp listener stopped unexpectedly")
 			return stop(1)
 		}

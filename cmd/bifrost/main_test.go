@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -197,6 +198,115 @@ func TestTwoListenersServeIndependently(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatalf("serve did not exit after SIGTERM; logs:\n%s", stderr.String())
+	}
+}
+
+// TestOneListenerStoppingUnexpectedlyFailsProcess proves the per-listener
+// fail-safe restored in main.go's smtp-listener closures: with two
+// listeners running, killing ONE listener's socket directly (no drain, no
+// signal — the way an external fd/fs failure would) must still fail the
+// whole process, even though the other listener is perfectly healthy and
+// serveDone (now an ALL-listeners-returned barrier) would otherwise never
+// fire on its own.
+func TestOneListenerStoppingUnexpectedlyFailsProcess(t *testing.T) {
+	addrA, addrB, adminAddr := freePort(t), freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "bifrost.hcl")
+	if err := os.WriteFile(path, []byte(twoListenerFixture(addrA, addrB, adminAddr)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	appc := make(chan *app, 1)
+	appHook = func(a *app) { appc <- a }
+	t.Cleanup(func() { appHook = nil })
+
+	var stderr syncBuffer
+	done := make(chan int, 1)
+	go func() { done <- run([]string{"-f", path}, io.Discard, &stderr) }()
+
+	var stopped atomic.Bool
+	t.Cleanup(func() {
+		if stopped.Load() {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("serve did not exit during cleanup; logs:\n%s", stderr.String())
+		}
+	})
+
+	waitForStatus(t, "http://"+adminAddr+"/healthz", http.StatusOK)
+
+	var a *app
+	select {
+	case a = <-appc:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("app never reached appHook")
+	}
+
+	// A healthy session on listener "b", open before "a" dies, to prove
+	// shutdown reaches every listener's sessions, not just the one that
+	// failed.
+	connB, err := net.Dial("tcp", addrB)
+	if err != nil {
+		t.Fatalf("dial listener b: %v", err)
+	}
+	defer connB.Close()
+	rb := bufio.NewReader(connB)
+	if banner, err := rb.ReadString('\n'); err != nil || !strings.HasPrefix(banner, "220") {
+		t.Fatalf("banner on listener b = %q, err=%v", banner, err)
+	}
+
+	var lnA net.Listener
+	for _, nl := range a.smtpLns {
+		if nl.name == "a" {
+			lnA = nl.ln
+		}
+	}
+	if lnA == nil {
+		t.Fatalf("listener %q not found in app.smtpLns", "a")
+	}
+	if err := lnA.Close(); err != nil {
+		t.Fatalf("close listener a: %v", err)
+	}
+
+	select {
+	case code := <-done:
+		stopped.Store(true)
+		if code != 1 {
+			t.Errorf("run() exit code = %d, want 1; logs:\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("serve did not exit after listener a died; logs:\n%s", stderr.String())
+	}
+
+	if logs := stderr.String(); !strings.Contains(logs, "smtp listener a:") || !strings.Contains(logs, "stopped unexpectedly") {
+		t.Errorf("logs = %s, want a per-listener stopped-unexpectedly error naming %q", logs, "a")
+	}
+
+	waitConnClosed(t, connB, 10*time.Second)
+}
+
+// waitConnClosed bounded-polls conn until a read fails (EOF or otherwise)
+// — proof the peer closed it — and fails t if the deadline passes with the
+// connection still open (every successful read is discarded; a drained
+// session may still have a goodbye line queued ahead of the close).
+func waitConnClosed(t *testing.T, conn net.Conn, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	buf := make([]byte, 512)
+	for {
+		_ = conn.SetReadDeadline(deadline)
+		_, err := conn.Read(buf)
+		if err == nil {
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Errorf("connection not closed within %s", d)
+			return
+		}
+		return
 	}
 }
 

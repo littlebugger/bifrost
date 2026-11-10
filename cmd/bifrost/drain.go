@@ -19,7 +19,7 @@ const goodbyeGrace = 5 * time.Second
 //     upstream L4 balancer can take this process out of rotation while it
 //     is still perfectly able to serve what it already has.
 //  2. lame duck: long enough for that upstream's own poll to notice.
-//  3. the listener closes — no new connections.
+//  3. every listener closes — no new connections.
 //  4. sessions are told the process is going away: one sitting between
 //     commands answers 421 4.3.0 and closes now; one inside a transaction
 //     finishes it first (the TxnHandler owns the connection until it
