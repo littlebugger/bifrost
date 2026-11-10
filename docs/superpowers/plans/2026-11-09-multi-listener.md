@@ -121,11 +121,11 @@ func Serve(ctx context.Context, ln net.Listener, cfg *config.Config,
 func (c *Config) UnionCapabilities() []string
 ```
 
-- [ ] **Step 1: Failing tests** — union helper: dedupe across listeners; SIZE max of {"SIZE 100","SIZE 900"} → "SIZE 900"; bare SIZE + numeric → bare wins? NO — bare SIZE means unlimited required = satisfied by anything, so numeric max wins for strictness; assert exactly `SIZE 900` given {"SIZE","SIZE 900"}. Probe test: two listeners where only B advertises 8BITMIME; backend without it → incompatible verdict.
-- [ ] **Step 2: RED**.
-- [ ] **Step 3: Implement** helper + swap the prober's source from the single listener's caps to the union (ONE call site change — find it in wire.go/health scheduling and name it in the report).
-- [ ] **Step 4: GREEN** — `go test ./internal/config/ ./internal/health/ -v`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: health probes require the union of listener capabilities"`
+- [x] **Step 1: Failing tests** — union helper: dedupe across listeners; SIZE max of {"SIZE 100","SIZE 900"} → "SIZE 900"; bare SIZE + numeric → bare wins? NO — bare SIZE means unlimited required = satisfied by anything, so numeric max wins for strictness; assert exactly `SIZE 900` given {"SIZE","SIZE 900"}. Probe test: two listeners where only B advertises 8BITMIME; backend without it → incompatible verdict.
+- [x] **Step 2: RED**.
+- [x] **Step 3: Implement** helper + swap the prober's source from the single listener's caps to the union (ONE call site change — find it in wire.go/health scheduling and name it in the report).
+- [x] **Step 4: GREEN** — `go test ./internal/config/ ./internal/health/ -v`.
+- [x] **Step 5: Commit** — `git commit -am "feat: health probes require the union of listener capabilities"`
 
 ### Task 5: Reload semantics per listener
 
@@ -133,11 +133,11 @@ func (c *Config) UnionCapabilities() []string
 - Modify: `internal/config/holder.go` (RestartRequired, BindChange if present)
 - Test: `internal/config/holder_test.go`
 
-- [ ] **Step 1: Failing tests** — compare by listener NAME: changed hostname/capabilities/auth(incl. AllowCleartext)/starttls on listener "bulk" → warning naming "bulk"; listener added or removed → warning; bind changed on one listener → the existing bind rejection/warning path per current single-listener behavior (read holder.go's BindChange handling first and mirror it per listener).
-- [ ] **Step 2: RED** — `go test ./internal/config/ -run 'TestRestartRequired|TestBind' -v`.
-- [ ] **Step 3: Implement** — key both sets by name; reuse the existing field comparisons per pair; messages name the listener.
-- [ ] **Step 4: GREEN** — `go test ./internal/config/ -v`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: per-listener reload warnings"`
+- [x] **Step 1: Failing tests** — compare by listener NAME: changed hostname/capabilities/auth(incl. AllowCleartext)/starttls on listener "bulk" → warning naming "bulk"; listener added or removed → warning; bind changed on one listener → the existing bind rejection/warning path per current single-listener behavior (read holder.go's BindChange handling first and mirror it per listener).
+- [x] **Step 2: RED** — `go test ./internal/config/ -run 'TestRestartRequired|TestBind' -v`.
+- [x] **Step 3: Implement** — key both sets by name; reuse the existing field comparisons per pair; messages name the listener.
+- [x] **Step 4: GREEN** — `go test ./internal/config/ -v`.
+- [x] **Step 5: Commit** — `git commit -am "feat: per-listener reload warnings"`
 
 ### Task 6: Observability
 
@@ -145,9 +145,9 @@ func (c *Config) UnionCapabilities() []string
 - Modify: `internal/proxy/metrics.go` + `internal/metrics/metrics.go` (+test) — `Transaction(pool, server, class)` gains a leading `listener` label; `internal/admin/admin.go` `/stats` gains per-listener session counts (source: proxy session gauge keyed by listener — read how sessions are counted today and extend the same mechanism)
 - Test: `internal/metrics/metrics_test.go`, `internal/admin/admin_test.go`
 
-- [ ] **Step 1: Failing tests** — metrics golden-list labels updated; Transaction records under the right listener label; /stats JSON shape with two listeners.
-- [ ] **Step 2: RED**. **Step 3: Implement** (noMetrics + prometheus + call sites in relay). **Step 4: GREEN** — `go test ./...`.
-- [ ] **Step 5: Commit** — `git commit -am "feat: label transactions and stats by listener"`
+- [x] **Step 1: Failing tests** — metrics golden-list labels updated; Transaction records under the right listener label; /stats JSON shape with two listeners.
+- [x] **Step 2: RED**. **Step 3: Implement** (noMetrics + prometheus + call sites in relay). **Step 4: GREEN** — `go test ./...`.
+- [x] **Step 5: Commit** — `git commit -am "feat: label transactions and stats by listener"`
 
 ### Task 7: Integration test
 
@@ -180,8 +180,8 @@ func (c *Config) UnionCapabilities() []string
 - Consumes: everything shipped on the auth, reuse, dns-discovery, and multi-listener branches (multi-listener example must use the Tasks 1–3 syntax: labeled `listener "name" {}` blocks + `rule { listener = [...] }`).
 - Constraint: example files reference certs as `server.crt`/`server.key` (relative to the file, like bifrost.hcl) and must pass validation INCLUDING the auth-requires-starttls and pool-auth-requires-TLS rules — so the auth example carries starttls + `backend_tls = "starttls"`; dns-discovery's `server_dns` address is a hostname (any; never resolved at load).
 
-- [ ] **Step 1: Failing test** — `TestExamplesLoad` written first; it fails on the not-yet-created files only if the glob is asserted non-empty (assert ≥ 5 files so missing examples fail loudly).
-- [ ] **Step 2: Write the four example files**; `go test ./internal/config/ -run TestExamplesLoad -v` to green — any validation error means the example is wrong, fix the example (never the validator).
-- [ ] **Step 3: README Configuration section + operations.md pointers.**
-- [ ] **Step 4: Gates** — `go test ./...`; `gofumpt -l internal` empty.
-- [ ] **Step 5: Commit** — `git commit -am "docs: per-feature config examples"`
+- [x] **Step 1: Failing test** — `TestExamplesLoad` written first; it fails on the not-yet-created files only if the glob is asserted non-empty (assert ≥ 5 files so missing examples fail loudly).
+- [x] **Step 2: Write the four example files**; `go test ./internal/config/ -run TestExamplesLoad -v` to green — any validation error means the example is wrong, fix the example (never the validator).
+- [x] **Step 3: README Configuration section + operations.md pointers.**
+- [x] **Step 4: Gates** — `go test ./...`; `gofumpt -l internal` empty.
+- [x] **Step 5: Commit** — `git commit -am "docs: per-feature config examples"`

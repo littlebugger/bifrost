@@ -487,7 +487,8 @@ func (t *txn) timeouts() config.Timeouts {
 // this is a deliberate simplification: a total-attach failure has no
 // single server at fault, so labeling one candidate would misattribute
 // it, and there is no cheap way from here to name the pool a PickFunc
-// resolved without one ever attaching).
+// resolved without one ever attaching). The listener label is always the
+// one this transaction actually arrived on (t.tx.lst).
 func (t *txn) countTxn(srv *config.Server, class string) {
 	var poolName string
 	if srv != nil {
@@ -495,5 +496,5 @@ func (t *txn) countTxn(srv *config.Server, class string) {
 			poolName = pool.Name
 		}
 	}
-	t.r.metrics.Transaction(poolName, srvName(srv), class)
+	t.r.metrics.Transaction(listenerName(t.tx.lst), poolName, srvName(srv), class)
 }

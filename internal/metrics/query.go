@@ -67,6 +67,25 @@ func SumCounter(mfs []*dto.MetricFamily, name string, want map[string]string) fl
 	return total
 }
 
+// SumGauge is SumCounter for a gauge-typed family — e.g. summing
+// bifrost_sessions_active across every listener for a process-wide total.
+func SumGauge(mfs []*dto.MetricFamily, name string, want map[string]string) float64 {
+	var total float64
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			if labelsMatch(m, want) {
+				if g := m.GetGauge(); g != nil {
+					total += g.GetValue()
+				}
+			}
+		}
+	}
+	return total
+}
+
 // labelsMatch reports whether metric carries every (key, value) in want.
 // A nil/empty want matches anything.
 func labelsMatch(metric *dto.Metric, want map[string]string) bool {

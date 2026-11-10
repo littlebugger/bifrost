@@ -133,9 +133,11 @@ func TestBinaryEndToEnd(t *testing.T) {
 		}
 	}
 
-	// Metrics moved, per server, through the real registry.
+	// Metrics moved, per server, through the real registry. Label pairs
+	// are always rendered alphabetically by name (client_golang's text
+	// encoder), so "listener" sorts ahead of "pool" here.
 	for _, name := range []string{"a", "b"} {
-		prefix := fmt.Sprintf("bifrost_transactions_total{pool=\"p\",server=%q,verdict_class=\"2xx\"}", name)
+		prefix := fmt.Sprintf("bifrost_transactions_total{listener=\"default\",pool=\"p\",server=%q,verdict_class=\"2xx\"}", name)
 		if got := metricValue(t, b, prefix); got != 2 {
 			t.Errorf("%s = %v, want 2", prefix, got)
 		}

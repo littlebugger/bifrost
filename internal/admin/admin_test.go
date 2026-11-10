@@ -243,9 +243,9 @@ func TestStatsEndpoint(t *testing.T) {
 
 	// Metrics is the *metrics.Metrics stored on Server; drive it
 	// directly the same way internal/proxy would.
-	s.m.SessionStarted()
-	s.m.Transaction("p", "s1", "2xx")
-	s.m.Transaction("p", "s1", "2xx")
+	s.m.SessionStarted("l1")
+	s.m.Transaction("l1", "p", "s1", "2xx")
+	s.m.Transaction("l1", "p", "s1", "2xx")
 	s.m.BackendDial("s1", true)
 	s.m.BackendDial("s1", false)
 
@@ -278,6 +278,52 @@ func TestStatsEndpoint(t *testing.T) {
 	}
 	if row["backend_dials_ok"] != float64(1) || row["backend_dials_fail"] != float64(1) {
 		t.Errorf("backend_dials_ok/fail = %v/%v, want 1/1", row["backend_dials_ok"], row["backend_dials_fail"])
+	}
+}
+
+// TestStatsEndpointPerListener: GET /stats' "listeners" array breaks down
+// sessions_active/sessions_total per listener, while the pre-existing
+// "totals" half keeps reporting the process-wide sum across all of them.
+func TestStatsEndpointPerListener(t *testing.T) {
+	cfg := testCfg(closedAddr(t))
+	cfg.Listeners = []config.Listener{{Name: "a"}, {Name: "b"}}
+	s, _, _ := testServer(t, cfg)
+
+	s.m.SessionStarted("a")
+	s.m.SessionStarted("a")
+	s.m.SessionEnded("a")
+	s.m.SessionStarted("b")
+
+	resp, body := getJSON(t, s.Handler(), "/stats")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	totals, ok := body["totals"].(map[string]any)
+	if !ok {
+		t.Fatalf("totals = %#v, want an object", body["totals"])
+	}
+	if totals["sessions_active"] != float64(2) {
+		t.Errorf("sessions_active = %v, want 2 (summed across listeners)", totals["sessions_active"])
+	}
+	if totals["sessions_total"] != float64(3) {
+		t.Errorf("sessions_total = %v, want 3 (summed across listeners)", totals["sessions_total"])
+	}
+
+	listeners, ok := body["listeners"].([]any)
+	if !ok || len(listeners) != 2 {
+		t.Fatalf("listeners = %#v, want exactly two entries", body["listeners"])
+	}
+	byName := map[string]map[string]any{}
+	for _, l := range listeners {
+		row := l.(map[string]any)
+		byName[row["name"].(string)] = row
+	}
+	if a := byName["a"]; a == nil || a["sessions_active"] != float64(1) || a["sessions_total"] != float64(2) {
+		t.Errorf("listener a = %+v, want sessions_active 1, sessions_total 2", a)
+	}
+	if b := byName["b"]; b == nil || b["sessions_active"] != float64(1) || b["sessions_total"] != float64(1) {
+		t.Errorf("listener b = %+v, want sessions_active 1, sessions_total 1", b)
 	}
 }
 
@@ -316,10 +362,11 @@ func TestMetricsServed(t *testing.T) {
 	waitFor(t, func() bool { return checker.Status("p", "s1").LastProbe.Level != "" })
 	stop()
 
-	// A CounterVec with zero labeled children is absent from a scrape
-	// even when correctly registered -- materialize one series on each
-	// of the push-based vecs the way internal/proxy really would.
-	s.m.Transaction("p", "s1", "2xx")
+	// A CounterVec/GaugeVec with zero labeled children is absent from a
+	// scrape even when correctly registered -- materialize one series on
+	// each of the push-based vecs the way internal/proxy really would.
+	s.m.SessionStarted("l1")
+	s.m.Transaction("l1", "p", "s1", "2xx")
 	s.m.SynthesizedReply("451 4.4.1")
 	s.m.RelayBytes("to_client", 1)
 	s.m.BackendDial("s1", true)

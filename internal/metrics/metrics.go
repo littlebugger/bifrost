@@ -43,8 +43,8 @@ import (
 type Metrics struct {
 	Registry *prometheus.Registry
 
-	sessionsActive   prometheus.Gauge
-	sessionsTotal    prometheus.Counter
+	sessionsActive   *prometheus.GaugeVec
+	sessionsTotal    *prometheus.CounterVec
 	transactions     *prometheus.CounterVec
 	synthReplies     *prometheus.CounterVec
 	relayBytes       *prometheus.CounterVec
@@ -63,15 +63,15 @@ func New() *Metrics {
 	reg := prometheus.NewRegistry()
 	m := &Metrics{
 		Registry: reg,
-		sessionsActive: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "bifrost_sessions_active", Help: "Client SMTP sessions currently open.",
-		}),
-		sessionsTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "bifrost_sessions_total", Help: "Client SMTP sessions accepted, cumulative.",
-		}),
+		sessionsActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "bifrost_sessions_active", Help: "Client SMTP sessions currently open, by listener.",
+		}, []string{"listener"}),
+		sessionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "bifrost_sessions_total", Help: "Client SMTP sessions accepted, cumulative, by listener.",
+		}, []string{"listener"}),
 		transactions: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "bifrost_transactions_total", Help: "Mail transactions concluded, by final verdict class.",
-		}, []string{"pool", "server", "verdict_class"}),
+			Name: "bifrost_transactions_total", Help: "Mail transactions concluded, by listener, pool, server, and final verdict class.",
+		}, []string{"listener", "pool", "server", "verdict_class"}),
 		synthReplies: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "bifrost_synthesized_replies_total", Help: "Replies Bifrost generated itself rather than relaying a backend's, by code and enhanced status.",
 		}, []string{"code_enhanced"}),
@@ -104,13 +104,13 @@ func New() *Metrics {
 }
 
 // SessionStarted implements proxy.Metrics.
-func (m *Metrics) SessionStarted() {
-	m.sessionsActive.Inc()
-	m.sessionsTotal.Inc()
+func (m *Metrics) SessionStarted(listener string) {
+	m.sessionsActive.WithLabelValues(listener).Inc()
+	m.sessionsTotal.WithLabelValues(listener).Inc()
 }
 
 // SessionEnded implements proxy.Metrics.
-func (m *Metrics) SessionEnded() { m.sessionsActive.Dec() }
+func (m *Metrics) SessionEnded(listener string) { m.sessionsActive.WithLabelValues(listener).Dec() }
 
 // BackendDial implements proxy.Metrics.
 func (m *Metrics) BackendDial(server string, ok bool) {
@@ -118,8 +118,8 @@ func (m *Metrics) BackendDial(server string, ok bool) {
 }
 
 // Transaction implements proxy.Metrics.
-func (m *Metrics) Transaction(pool, server, verdictClass string) {
-	m.transactions.WithLabelValues(pool, server, verdictClass).Inc()
+func (m *Metrics) Transaction(listener, pool, server, verdictClass string) {
+	m.transactions.WithLabelValues(listener, pool, server, verdictClass).Inc()
 }
 
 // SynthesizedReply implements proxy.Metrics.

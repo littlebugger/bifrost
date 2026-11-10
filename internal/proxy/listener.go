@@ -115,8 +115,8 @@ func Serve(ctx context.Context, ln net.Listener, cfg *config.Config, lst *config
 		go func() {
 			defer wg.Done()
 			defer active.Add(-1)
-			m.SessionStarted()
-			defer m.SessionEnded()
+			m.SessionStarted(listenerName(lst))
+			defer m.SessionEnded(listenerName(lst))
 			s := NewSession(conn, cfg, lst, tlsCfg, h, lg)
 			if err := s.Run(ctx); err != nil {
 				lg.Warn("session ended with error", "error", err)

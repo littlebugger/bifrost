@@ -69,7 +69,9 @@ func waitForProbe(t *testing.T, c *health.Checker, pool, server string) {
 // being exercised by internal/admin's own suite.
 func TestMetricNamesStable(t *testing.T) {
 	m := New()
-	m.transactions.WithLabelValues("p", "s", "2xx")
+	m.sessionsActive.WithLabelValues("l1")
+	m.sessionsTotal.WithLabelValues("l1")
+	m.transactions.WithLabelValues("l1", "p", "s", "2xx")
 	m.synthReplies.WithLabelValues("451 4.4.1")
 	m.relayBytes.WithLabelValues("to_client")
 	m.backendDials.WithLabelValues("s", "ok")
@@ -134,6 +136,54 @@ func TestMetricNamesStable(t *testing.T) {
 		sort.Strings(gotNames)
 		sort.Strings(want)
 		t.Errorf("registry exposes %v, want exactly %v", gotNames, want)
+	}
+}
+
+// TestTransactionListenerLabel verifies Transaction records under the
+// listener it was called with, distinct from a different listener's own
+// count on the same pool/server/verdict_class.
+func TestTransactionListenerLabel(t *testing.T) {
+	m := New()
+	m.Transaction("a", "p", "s1", "2xx")
+	m.Transaction("a", "p", "s1", "2xx")
+	m.Transaction("b", "p", "s1", "2xx")
+
+	mfs, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	want := map[string]string{"listener": "a", "pool": "p", "server": "s1", "verdict_class": "2xx"}
+	if got := CounterValue(mfs, "bifrost_transactions_total", want); got != 2 {
+		t.Errorf("transactions_total{listener=a} = %v, want 2", got)
+	}
+	want["listener"] = "b"
+	if got := CounterValue(mfs, "bifrost_transactions_total", want); got != 1 {
+		t.Errorf("transactions_total{listener=b} = %v, want 1", got)
+	}
+}
+
+// TestSessionsByListener verifies SessionStarted/SessionEnded move the
+// active/total gauges under the listener they were called with, not
+// commingled with a different listener's own count.
+func TestSessionsByListener(t *testing.T) {
+	m := New()
+	m.SessionStarted("a")
+	m.SessionStarted("a")
+	m.SessionEnded("a")
+	m.SessionStarted("b")
+
+	mfs, err := m.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if got := GaugeValue(mfs, "bifrost_sessions_active", map[string]string{"listener": "a"}); got != 1 {
+		t.Errorf("sessions_active{listener=a} = %v, want 1", got)
+	}
+	if got := CounterValue(mfs, "bifrost_sessions_total", map[string]string{"listener": "a"}); got != 2 {
+		t.Errorf("sessions_total{listener=a} = %v, want 2", got)
+	}
+	if got := GaugeValue(mfs, "bifrost_sessions_active", map[string]string{"listener": "b"}); got != 1 {
+		t.Errorf("sessions_active{listener=b} = %v, want 1", got)
 	}
 }
 
