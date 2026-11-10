@@ -242,6 +242,41 @@ func TestSchedulerStopsOnCtxCancel(t *testing.T) {
 	}
 }
 
+// TestSyncPopulatesUnionCapabilities proves the scheduler.go call-site
+// swap (sync now reads cfg.UnionCapabilities() instead of
+// cfg.PrimaryListener().Capabilities) actually feeds the real scheduling
+// path's listenerCaps, not just that the pure union function works in
+// isolation (see probe_test.go's TestProbeRequiresUnionOfListenerCapabilities
+// for that). Listener "a" is PrimaryListener (index 0) and advertises
+// only PIPELINING; listener "b" additionally advertises 8BITMIME. The old
+// PrimaryListener()-only wiring would leave listenerCaps at ["PIPELINING"]
+// — this would fail under that code path.
+func TestSyncPopulatesUnionCapabilities(t *testing.T) {
+	fc := newFakeClock()
+	holder := &config.Holder{}
+	holder.Swap(&config.Config{
+		Listeners: []config.Listener{
+			{Name: "a", Capabilities: []string{"PIPELINING"}},
+			{Name: "b", Capabilities: []string{"PIPELINING", "8BITMIME"}},
+		},
+		Pools: []config.Pool{{Name: "p", Servers: []config.Server{schedServer("s1", 2, 3, 100*time.Millisecond)}}},
+	})
+
+	stub := func(context.Context, *config.Server, config.CheckParams, []string) probeResult {
+		return probeResult{ok: true}
+	}
+	c := newChecker(holder, fc, discardLog(), stub)
+
+	c.mu.Lock()
+	got := c.listenerCaps
+	c.mu.Unlock()
+
+	want := []string{"PIPELINING", "8BITMIME"}
+	if !equalStrings(got, want) {
+		t.Errorf("listenerCaps = %q, want %q (the union of both listeners, not just the primary one)", got, want)
+	}
+}
+
 // TestIncompatibleDrivesEligibleFalse: applyResult wires a probe's
 // incompatible verdict onto the registered entry's health end to end —
 // a probe that is op-wise a success but capability-incompatible must

@@ -54,7 +54,9 @@ func (c *Config) PrimaryListener() *Listener {
 // deduped case-insensitively by name (first spelling wins), with SIZE
 // collapsed to one entry carrying the maximum required byte count (a
 // bare "SIZE" — unlimited required — loses to any numeric one; absent
-// entirely if no listener advertises SIZE at all). STARTTLS and every
+// entirely if no listener advertises SIZE at all). A numeric "SIZE 0" is
+// treated the same as bare SIZE: both mean unlimited-required (RFC 1870),
+// so neither ever wins over a real positive value. STARTTLS and every
 // other capability pass through unchanged; backend.checkSuperset already
 // ignores STARTTLS.
 //

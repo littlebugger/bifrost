@@ -60,6 +60,19 @@ func TestUnionCapabilities(t *testing.T) {
 			want: []string{"SIZE"},
 		},
 		{
+			name: "SIZE 0 (RFC 1870 unlimited) loses to a numeric one, like bare SIZE",
+			cfg: listeners(
+				[]string{"SIZE 0"},
+				[]string{"SIZE 900"},
+			),
+			want: []string{"SIZE 900"},
+		},
+		{
+			name: "SIZE 0 alone folds to bare SIZE",
+			cfg:  listeners([]string{"SIZE 0"}),
+			want: []string{"SIZE"},
+		},
+		{
 			name: "no listener advertises SIZE: absent",
 			cfg: listeners(
 				[]string{"PIPELINING"},
