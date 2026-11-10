@@ -167,3 +167,21 @@ func (c *Config) UnionCapabilities() []string
 - [ ] **Step 1–3: Edit the three docs**; verify `go test ./internal/config/ -v` (example fixture) stays green.
 - [ ] **Step 4: Gates** — `go test ./...`; `gofumpt -l internal cmd test` empty.
 - [ ] **Step 5: Commit** — `git commit -am "docs: multiple listeners"`
+
+### Task 9: Feature config examples (user request 2026-11-10)
+
+**Files:**
+- Create: `examples/auth.hcl`, `examples/reuse.hcl`, `examples/dns-discovery.hcl`, `examples/multi-listener.hcl` — one UNCOMMENTED, minimal, load-valid config per feature (not sketches: every attribute live), each headed by a comment block naming the feature, what each knob does, and the operations.md section to read
+- Create: `internal/config/examples_test.go` — `TestExamplesLoad`: globs `../../examples/*.hcl`, asserts each loads with zero error diagnostics (table over files; `examples/bifrost.hcl` keeps its own detailed test)
+- Modify: `README.md` — a "Configuration" section after Install: the minimal config shape, then a table linking each `examples/*.hcl` to its feature and operations.md anchor
+- Modify: `docs/operations.md` — each feature section gains one line "Working example: `examples/<file>.hcl`"
+
+**Interfaces:**
+- Consumes: everything shipped on the auth, reuse, dns-discovery, and multi-listener branches (multi-listener example must use the Tasks 1–3 syntax: labeled `listener "name" {}` blocks + `rule { listener = [...] }`).
+- Constraint: example files reference certs as `server.crt`/`server.key` (relative to the file, like bifrost.hcl) and must pass validation INCLUDING the auth-requires-starttls and pool-auth-requires-TLS rules — so the auth example carries starttls + `backend_tls = "starttls"`; dns-discovery's `server_dns` address is a hostname (any; never resolved at load).
+
+- [ ] **Step 1: Failing test** — `TestExamplesLoad` written first; it fails on the not-yet-created files only if the glob is asserted non-empty (assert ≥ 5 files so missing examples fail loudly).
+- [ ] **Step 2: Write the four example files**; `go test ./internal/config/ -run TestExamplesLoad -v` to green — any validation error means the example is wrong, fix the example (never the validator).
+- [ ] **Step 3: README Configuration section + operations.md pointers.**
+- [ ] **Step 4: Gates** — `go test ./...`; `gofumpt -l internal` empty.
+- [ ] **Step 5: Commit** — `git commit -am "docs: per-feature config examples"`
