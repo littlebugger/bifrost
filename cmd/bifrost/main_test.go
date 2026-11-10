@@ -253,7 +253,7 @@ func TestOneListenerStoppingUnexpectedlyFailsProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial listener b: %v", err)
 	}
-	defer connB.Close()
+	defer func() { _ = connB.Close() }()
 	rb := bufio.NewReader(connB)
 	if banner, err := rb.ReadString('\n'); err != nil || !strings.HasPrefix(banner, "220") {
 		t.Fatalf("banner on listener b = %q, err=%v", banner, err)
