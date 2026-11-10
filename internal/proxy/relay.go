@@ -58,6 +58,9 @@ type TxnMeta struct {
 	// not parse — the backend, not Bifrost, is the syntax authority).
 	// Populated by mailFromDomain from the transaction's raw MAIL line.
 	MailFromDomain string
+
+	// Listener is the name of the listener on which the session arrived.
+	Listener string
 }
 
 // mailFromDomain extracts and lowercases the domain from a MAIL command
