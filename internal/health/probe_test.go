@@ -320,6 +320,32 @@ func TestProbeHarvestsCapsAndSupersetVerdict(t *testing.T) {
 	}
 }
 
+// TestProbeRequiresUnionOfListenerCapabilities: the health prober has no
+// single transaction to pin its required set to, so it checks a backend
+// against config.Config.UnionCapabilities() — every listener that could
+// route to it, not just one (design doc's "Backend capability referent").
+// Listener "a" advertises only PIPELINING; listener "b" also advertises
+// 8BITMIME. A backend missing 8BITMIME would satisfy "a" alone, but must
+// still be marked Incompatible once "b" is in the union.
+func TestProbeRequiresUnionOfListenerCapabilities(t *testing.T) {
+	srv := fakesmtp.Start(t, fakesmtp.Script{Caps: []string{"PIPELINING"}}) // 8BITMIME missing
+
+	cfg := &config.Config{
+		Listeners: []config.Listener{
+			{Name: "a", Capabilities: []string{"PIPELINING"}},
+			{Name: "b", Capabilities: []string{"PIPELINING", "8BITMIME"}},
+		},
+	}
+
+	res := runProbe(context.Background(), testSrv(srv.Addr()), probeParams("ehlo"), cfg.UnionCapabilities())
+	if !res.ok {
+		t.Errorf("ok = false, want true (op-wise the handshake succeeded; reason=%q)", res.reason)
+	}
+	if !res.incompatible {
+		t.Errorf("incompatible = false, want true (union requires 8BITMIME via listener b)")
+	}
+}
+
 // TestProbeAuthSuccess: with creds, a TLS-upgraded connection (Dial
 // refuses AUTH over cleartext, see TestProbeAuthRefusesCleartext), and a
 // fake advertising AUTH PLAIN, probe succeeds and the fake recorded the

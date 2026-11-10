@@ -11,6 +11,8 @@ package config
 
 import (
 	"crypto/x509"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -46,6 +48,56 @@ func (c *Config) PrimaryListener() *Listener {
 		return &Listener{}
 	}
 	return &c.Listeners[0]
+}
+
+// UnionCapabilities returns every capability advertised by any listener,
+// deduped case-insensitively by name (first spelling wins), with SIZE
+// collapsed to one entry carrying the maximum required byte count (a
+// bare "SIZE" — unlimited required — loses to any numeric one; absent
+// entirely if no listener advertises SIZE at all). STARTTLS and every
+// other capability pass through unchanged; backend.checkSuperset already
+// ignores STARTTLS.
+//
+// This is the health prober's required-capability referent (see
+// internal/health's sync): probes are per-server, not per-transaction,
+// so a backend must satisfy every listener that could route to it, not
+// just one (design doc's "Backend capability referent"). Per-transaction
+// checks are unaffected — those use the arriving listener's own
+// Capabilities directly.
+//
+// Output order is stable: first-seen order across listeners (SIZE keeps
+// the position of its first occurrence), so callers can assert exact
+// slices.
+func (c *Config) UnionCapabilities() []string {
+	var union []string
+	seen := make(map[string]int) // uppercased capability name -> index in union
+	sizeIdx := -1
+	var sizeMax int64
+
+	for _, l := range c.Listeners {
+		for _, capa := range l.Capabilities {
+			verb, arg, _ := strings.Cut(strings.ToUpper(strings.TrimSpace(capa)), " ")
+			if verb == "SIZE" {
+				if sizeIdx == -1 {
+					sizeIdx = len(union)
+					union = append(union, "SIZE") // placeholder, fixed up below
+				}
+				if n, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64); err == nil && n > sizeMax {
+					sizeMax = n
+				}
+				continue
+			}
+			if _, ok := seen[verb]; !ok {
+				seen[verb] = len(union)
+				union = append(union, capa)
+			}
+		}
+	}
+
+	if sizeIdx >= 0 && sizeMax > 0 {
+		union[sizeIdx] = "SIZE " + strconv.FormatInt(sizeMax, 10)
+	}
+	return union
 }
 
 // Defaults holds the config-wide fallback values consulted by pool/server
