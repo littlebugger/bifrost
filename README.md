@@ -52,4 +52,4 @@ below also has its own minimal, load-valid example:
 | `examples/auth.hcl` | SMTP AUTH (client and backend leg) | [§ SMTP AUTH](docs/operations.md#smtp-auth) |
 | `examples/reuse.hcl` | Backend connection reuse | [§ Backend connection reuse](docs/operations.md#backend-connection-reuse) |
 | `examples/dns-discovery.hcl` | DNS-discovered pool members | [§ DNS-discovered pool members](docs/operations.md#dns-discovered-pool-members) |
-| `examples/multi-listener.hcl` | Multiple labeled listeners + routing by listener | *(no section yet)* |
+| `examples/multi-listener.hcl` | Multiple labeled listeners + routing by listener | [§ Multiple listeners](docs/operations.md#multiple-listeners) |

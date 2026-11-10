@@ -40,7 +40,13 @@ defaults {
   }
 }
 
-# Exactly one listener is supported in v1.
+# This file stays single-listener on purpose -- it's internal/config's
+# load fixture (see load_test.go), and a lone unlabeled block like this
+# one is still exactly how a single-listener deployment is written: it
+# gets the implicit name "default", no label required. The moment a
+# second listener{} block is added (sketched commented-out below), every
+# block needs a label; see examples/multi-listener.hcl and
+# docs/operations.md's "Multiple listeners" section for the full shape.
 listener {
   bind     = "0.0.0.0:25"
   hostname = "mail.example.com"
@@ -72,6 +78,17 @@ listener {
   #   # allow_cleartext = true  # only for a link already secured at the network layer (e.g. in-cluster k8s) -- lifts the starttls requirement and the 538 gate
   # }
 }
+
+# A second listener -- its own bind, hostname, and (optionally) its own
+# starttls/auth/capabilities -- routed to its own pool by a routing rule's
+# `listener` attribute (AND-combined with client_cidr/mail_from_domain).
+# Both blocks need a label the moment there is more than one. Uncomment
+# to enable:
+# listener "bulk" {
+#   bind         = "0.0.0.0:2526"
+#   hostname     = "bulk.mail.example.com"
+#   capabilities = ["PIPELINING", "8BITMIME"]
+# }
 
 # "internal": smooth-weighted round robin, plain-TCP probe on an
 # alternate port for the spare backup -- the probe-port-override
@@ -160,6 +177,8 @@ routing {
     mail_from_domain = ["*.news.example.com"]
     pool             = "bulk"
   }
+
+  # rule { listener = ["bulk"] pool = "bulk" }   # routes by arrival listener; pairs with the commented listener "bulk" block above
 
   default_pool = "internal"
 }
