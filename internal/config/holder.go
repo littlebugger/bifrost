@@ -43,7 +43,11 @@ func (h *Holder) Swap(cfg *Config) (old *Config) {
 // silently moved, just a new one that needs a restart to open (or an old
 // one that keeps accepting until the process restarts), so that case is a
 // RestartRequired warning instead (see there), the same precedent as
-// every other listener-identity edit.
+// every other listener-identity edit. A listener renamed in place (same
+// bind, new label) is exactly that case, not a bind change: the old name
+// reads as removed and the new name as added, never rejected here — the
+// already-open socket keeps serving under the stale name until a restart
+// actually re-resolves it.
 //
 // It returns nil when no surviving listener's bind changed and the admin
 // bind didn't either, including when old is nil (an initial load has
@@ -93,7 +97,12 @@ func BindChange(old, newCfg *Config) error {
 // reported as "added" or "removed" instead of diffed field-by-field — it
 // has no counterpart to diff against, and still needs a restart (a new
 // listener's socket isn't open yet; a removed one keeps accepting until
-// the process restarts).
+// the process restarts). A listener renamed in place (same bind, new
+// label) is exactly this: the old name warns removed and the new name
+// warns added — two warnings, never a BindChange rejection — and the
+// already-open socket (its accept loop captured the old *Listener at
+// startup, see cmd/bifrost/wire.go's listen) keeps serving under the
+// stale name regardless until a restart.
 //
 // A single-listener config — the common case, bifrost.hcl's one unlabeled
 // "default" listener — keeps today's unqualified wording ("listener
@@ -127,12 +136,13 @@ func RestartRequired(old, newCfg *Config) []string {
 			continue
 		}
 
-		hostnameWhat, capsWhat := "listener hostname", "listener capabilities"
+		hostnameWhat, capsWhat, startTLSWhat := "listener hostname", "listener capabilities", "listener starttls min_version"
 		authMsg, startTLSMsg := "listener auth changed: restart required to apply",
 			"listener starttls changed: restart required to apply"
 		if qualify {
 			hostnameWhat = fmt.Sprintf("listener %q hostname", name)
 			capsWhat = fmt.Sprintf("listener %q capabilities", name)
+			startTLSWhat = fmt.Sprintf("listener %q starttls min_version", name)
 			authMsg = fmt.Sprintf("listener %q auth changed: restart required to apply", name)
 			startTLSMsg = fmt.Sprintf("listener %q starttls changed: restart required to apply", name)
 		}
@@ -143,7 +153,18 @@ func RestartRequired(old, newCfg *Config) []string {
 			add(capsWhat, oldL.Capabilities, newL.Capabilities)
 		}
 		if startTLSChanged(oldL.StartTLS, newL.StartTLS) {
-			out = append(out, startTLSMsg)
+			// MinVersion is a plain enum string ("1.2", "1.3", ...), not
+			// credential material, so it's named like hostname/capabilities
+			// when it's the field that actually moved. Cert/Key are file
+			// paths, not secrets either, but their value tells an operator
+			// nothing the path itself didn't already (no old/new content to
+			// compare), so a cert- or key-only change keeps the plain
+			// unqualified message instead of printing the path.
+			if oldMV, newMV := startTLSMinVersion(oldL.StartTLS), startTLSMinVersion(newL.StartTLS); oldMV != newMV {
+				add(startTLSWhat, oldMV, newMV)
+			} else {
+				out = append(out, startTLSMsg)
+			}
 		}
 		if listenerAuthChanged(oldL.Auth, newL.Auth) {
 			// Bypasses add(from, to): a Session captures Listener.Auth at
@@ -182,14 +203,6 @@ func RestartRequired(old, newCfg *Config) []string {
 	return out
 }
 
-// listenerAuthChanged reports whether old and newCfg's listener auth
-// differ: one is configured and the other isn't, the user sets don't
-// match (name, salt, or hash) — order-independent, so reordering user
-// blocks in the file alone doesn't spuriously warn — or AllowCleartext
-// flips. AllowCleartext gates a Session's plaintext-AUTH acceptance the
-// same way the user set gates AUTH at all, and a Session reads both at
-// accept, so toggling it alone (tightening it OFF, most importantly)
-// needs the same "restart required" warning as a credential edit does.
 // listenersByName indexes cfg's listeners by Name, for the per-listener
 // reload comparisons above (BindChange, RestartRequired). Validate
 // enforces unique names the moment there is more than one listener block
@@ -244,6 +257,24 @@ func startTLSChanged(old, newCfg *StartTLS) bool {
 	return old.Cert != newCfg.Cert || old.Key != newCfg.Key || old.MinVersion != newCfg.MinVersion
 }
 
+// startTLSMinVersion is s.MinVersion, or "" for a nil StartTLS (no
+// client-facing TLS configured) — so RestartRequired can compare old and
+// new even when one side has no StartTLS block at all.
+func startTLSMinVersion(s *StartTLS) string {
+	if s == nil {
+		return ""
+	}
+	return s.MinVersion
+}
+
+// listenerAuthChanged reports whether old and newCfg's listener auth
+// differ: one is configured and the other isn't, the user sets don't
+// match (name, salt, or hash) — order-independent, so reordering user
+// blocks in the file alone doesn't spuriously warn — or AllowCleartext
+// flips. AllowCleartext gates a Session's plaintext-AUTH acceptance the
+// same way the user set gates AUTH at all, and a Session reads both at
+// accept, so toggling it alone (tightening it OFF, most importantly)
+// needs the same "restart required" warning as a credential edit does.
 func listenerAuthChanged(old, newCfg *ListenerAuth) bool {
 	if (old == nil) != (newCfg == nil) {
 		return true

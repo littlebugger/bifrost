@@ -308,7 +308,7 @@ func TestRestartRequiredPerListenerName(t *testing.T) {
 		{"capabilities", func(c *Config) { c.Listeners[1].Capabilities = []string{"PIPELINING", "8BITMIME"} }, `listener "bulk" capabilities changed`},
 		{"auth", func(c *Config) { c.Listeners[1].Auth.Users[0].HashedPassword = strings.Repeat("b", 64) }, `listener "bulk" auth changed`},
 		{"starttls cert", func(c *Config) { c.Listeners[1].StartTLS.Cert = "other.crt" }, `listener "bulk" starttls changed`},
-		{"starttls min_version", func(c *Config) { c.Listeners[1].StartTLS.MinVersion = "1.3" }, `listener "bulk" starttls changed`},
+		{"starttls min_version", func(c *Config) { c.Listeners[1].StartTLS.MinVersion = "1.3" }, `listener "bulk" starttls min_version changed (1.2 -> 1.3)`},
 	}
 
 	for _, tc := range tests {
