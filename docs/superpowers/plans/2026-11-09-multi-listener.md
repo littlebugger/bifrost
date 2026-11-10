@@ -154,10 +154,10 @@ func (c *Config) UnionCapabilities() []string
 **Files:**
 - Create: `test/integration/multilistener_test.go`
 
-- [ ] **Step 1: Write tests** (reuse the m1/auth harness; Serve's new signature): (1) two listeners, two pools, two fakes — mail into port A lands only on fake A, port B only on fake B (listener routing end to end); (2) per-txn RequiredCaps: fake B missing a cap only listener B advertises → port-B mail gets 451 synth, port-A mail unaffected; (3) auth isolation: user valid on A → 235 on A, 535 on B.
-- [ ] **Step 2: Run** — `go test -tags=integration ./test/integration/ -run TestMultiListener -v` (note: check whether this harness file needs the integration tag by looking at its siblings).
-- [ ] **Step 3: Full suite** — `go test ./...` and `go test -race -count=1 -tags=integration ./internal/proxy/ ./test/integration/`.
-- [ ] **Step 4: Commit** — `git commit -am "test: multi-listener integration coverage"`
+- [x] **Step 1: Write tests** (reuse the m1/auth harness; Serve's new signature): (1) two listeners, two pools, two fakes — mail into port A lands only on fake A, port B only on fake B (listener routing end to end); (2) per-txn RequiredCaps: fake B missing a cap only listener B advertises → port-B mail gets 451 synth, port-A mail unaffected; (3) auth isolation: user valid on A → 235 on A, 535 on B.
+- [x] **Step 2: Run** — `go test -tags=integration ./test/integration/ -run TestMultiListener -v` (note: check whether this harness file needs the integration tag by looking at its siblings).
+- [x] **Step 3: Full suite** — `go test ./...` and `go test -race -count=1 -tags=integration ./internal/proxy/ ./test/integration/`.
+- [x] **Step 4: Commit** — `git commit -am "test: multi-listener integration coverage"`
 
 ### Task 8: Documentation
 
